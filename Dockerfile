@@ -2,6 +2,10 @@ FROM node:22.12-alpine AS builder
 
 COPY package.json package-lock.json tsconfig.json /app/
 COPY src /app/src
+# index.ts is the CLI/MCP entry point emitted to dist/index.js (see ENTRYPOINT below)
+# and globals.d.ts supplies the ambient `process` declaration the build depends on.
+# Copying only src/ breaks `npm run build` and produces no dist/index.js.
+COPY index.ts globals.d.ts /app/
 
 WORKDIR /app
 

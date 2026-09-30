@@ -49,7 +49,7 @@ The server uses `src/utils/config-manager.ts` for in-memory runtime flags. At st
 
 ## Prompt and Config Storage
 
-The default config directory behavior is defined in [`src/utils/config.ts`](/home/geeknik/dev/plan-audit-map/src/utils/config.ts):
+The default config directory behavior is defined in [`src/utils/config.ts`](src/utils/config.ts):
 
 - Default config directory: `~/.plan-audit-map`
 - Default prompt values file: `~/.plan-audit-map/prompt_values.json`

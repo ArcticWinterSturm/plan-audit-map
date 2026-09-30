@@ -273,11 +273,6 @@ The following files and directories were renamed during the project rename:
 | `mapthinkdo-desk-launcher.sh` | `planauditmap-desk-launcher.sh` |
 | `mapthinkdo_desk/` | `planauditmap_desk/` |
 | `map-think-do.e2e.ts` | `plan-audit-map.e2e.ts` |
-| `mapthinkdo_localhost.bat` (root) | `planauditmap_localhost.bat` |
-| `mapthinkdo_local_lan.bat` (root) | `planauditmap_local_lan.bat` |
-| `mapthinkdo_remote.bat` (root) | `planauditmap_remote.bat` |
-| `mapthinkdo_stdio.bat` (root) | `planauditmap_stdio.bat` |
-| `mapthinkdo_token.bat` (root) | `planauditmap_token.bat` |
 
 ## 9. Configuration
 

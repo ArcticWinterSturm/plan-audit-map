@@ -4,15 +4,15 @@ This repository uses "cognitive", "persona", and "metacognitive" terminology to 
 
 ## Current Architecture
 
-The main server lives in [`src/server.ts`](/home/geeknik/dev/plan-audit-map/src/server.ts) and exposes the `plan-audit-map` MCP tool.
+The main server lives in [`src/server.ts`](src/server.ts) and exposes the `plan-audit-map` MCP tool.
 
 Important subsystems:
 
-- [`src/cognitive/cognitive-orchestrator.ts`](/home/geeknik/dev/plan-audit-map/src/cognitive/cognitive-orchestrator.ts): coordinates plugin execution, state updates, recommendations, and memory writes.
-- [`src/cognitive/state-tracker.ts`](/home/geeknik/dev/plan-audit-map/src/cognitive/state-tracker.ts): tracks session and cognitive-state heuristics.
-- [`src/state/`](/home/geeknik/dev/plan-audit-map/src/state): maintains unified application state and adapter-driven synchronization.
-- [`src/memory/`](/home/geeknik/dev/plan-audit-map/src/memory): persistent storage abstractions and implementations.
-- [`src/prompts/`](/home/geeknik/dev/plan-audit-map/src/prompts): prompt templates and prompt value persistence.
+- [`src/cognitive/cognitive-orchestrator.ts`](src/cognitive/cognitive-orchestrator.ts): coordinates plugin execution, state updates, recommendations, and memory writes.
+- [`src/cognitive/state-tracker.ts`](src/cognitive/state-tracker.ts): tracks session and cognitive-state heuristics.
+- [`src/state/`](src/state): maintains unified application state and adapter-driven synchronization.
+- [`src/memory/`](src/memory): persistent storage abstractions and implementations.
+- [`src/prompts/`](src/prompts): prompt templates and prompt value persistence.
 
 ## Reasoning Model
 

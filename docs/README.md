@@ -26,4 +26,4 @@ The server implements structured reasoning with persisted state, prompt support,
 - In normal mode, secure logging redacts and hashes content before writing logs.
 - In `--debug` mode, raw content may be logged to `stderr`.
 - Debug mode should only be used in trusted environments with controlled data.
-- Test logs are written under [`logs/`](/home/geeknik/dev/plan-audit-map/logs) and results under [`test-results/`](/home/geeknik/dev/plan-audit-map/test-results).
+- Test logs are written under [`logs/`](logs) and results under [`test-results/`](test-results).
