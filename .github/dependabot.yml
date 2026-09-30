@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Check for updates to npm packages
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Group all minor and patch updates together
+    groups:
+      minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    # Create pull requests for version updates
+    open-pull-requests-limit: 10
+    # Assign labels to pull requests
+    labels:
+      - "enhancement"
+    # Reviewers are now managed via CODEOWNERS file
+
+  # Check for updates to GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "enhancement"

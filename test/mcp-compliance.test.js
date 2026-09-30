@@ -1,0 +1,378 @@
+#!/usr/bin/env node
+
+/**
+ * MCP Compliance Test Suite
+ *
+ * Tests our server against the official MCP specification to ensure
+ * full protocol compliance including:
+ * - JSON-RPC 2.0 message format
+ * - Standard error codes
+ * - Proper initialization handshake
+ * - Transport layer requirements
+ */
+
+import { spawn } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function testMcpCompliance() {
+  console.log('🔍 Testing MCP Protocol Compliance...\n');
+
+  await testInitializationHandshake();
+  await testErrorCodeCompliance();
+  await testInvalidMethodHandling();
+  await testInvalidParamsHandling();
+  await testTransportCompliance();
+
+  console.log('✅ MCP Compliance test suite completed\n');
+}
+
+async function testInitializationHandshake() {
+  console.log('🤝 Test: Initialization Handshake');
+
+  const serverProcess = spawn('node', [path.join(__dirname, '../dist/index.js')], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  try {
+    // Send initialize request
+    const initRequest =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {
+            tools: {},
+          },
+          clientInfo: {
+            name: 'mcp-compliance-test',
+            version: '1.0.0',
+          },
+        },
+      }) + '\n';
+
+    serverProcess.stdin.write(initRequest);
+
+    // Wait for response
+    let response = '';
+    const responsePromise = new Promise(resolve => {
+      serverProcess.stdout.on('data', data => {
+        response += data.toString();
+        if (response.includes('}')) {
+          resolve(response);
+        }
+      });
+    });
+
+    await Promise.race([responsePromise, wait(3000)]);
+
+    // Validate response format
+    try {
+      const parsedResponse = JSON.parse(response.trim());
+
+      // Check JSON-RPC 2.0 format
+      if (parsedResponse.jsonrpc !== '2.0') {
+        console.log('❌ Invalid JSON-RPC version');
+        return;
+      }
+
+      // Check required fields
+      if (!parsedResponse.result) {
+        console.log('❌ Missing result field');
+        return;
+      }
+
+      const result = parsedResponse.result;
+
+      // Check protocol version
+      if (!result.protocolVersion) {
+        console.log('❌ Missing protocolVersion');
+        return;
+      }
+
+      // Check capabilities
+      if (!result.capabilities) {
+        console.log('❌ Missing capabilities');
+        return;
+      }
+
+      // Check server info
+      if (!result.serverInfo || !result.serverInfo.name || !result.serverInfo.version) {
+        console.log('❌ Missing or invalid serverInfo');
+        return;
+      }
+
+      console.log('✅ Initialization handshake compliant');
+    } catch (err) {
+      console.log('❌ Invalid JSON response:', err.message);
+    }
+  } finally {
+    serverProcess.kill();
+  }
+}
+
+async function testErrorCodeCompliance() {
+  console.log('⚠️ Test: Error Code Compliance');
+
+  const serverProcess = spawn('node', [path.join(__dirname, '../dist/index.js')], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  try {
+    // Initialize first
+    const initRequest =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '1.0.0' },
+        },
+      }) + '\n';
+
+    serverProcess.stdin.write(initRequest);
+    await wait(200);
+
+    // Test unknown method (should return -32601)
+    const unknownMethodRequest =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'unknown/method',
+        params: {},
+      }) + '\n';
+
+    serverProcess.stdin.write(unknownMethodRequest);
+
+    // Test invalid tool call (should return -32601)
+    const invalidToolRequest =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'non-existent-tool',
+          arguments: {},
+        },
+      }) + '\n';
+
+    serverProcess.stdin.write(invalidToolRequest);
+
+    // Test invalid parameters (should return -32602)
+    const invalidParamsRequest =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: {
+          name: 'plan-audit-map',
+          arguments: {
+            // Missing required fields
+            thought_number: 'invalid',
+          },
+        },
+      }) + '\n';
+
+    serverProcess.stdin.write(invalidParamsRequest);
+
+    await wait(1000);
+    console.log('✅ Error code tests sent (responses should use MCP standard error codes)');
+  } finally {
+    serverProcess.kill();
+  }
+}
+
+async function testInvalidMethodHandling() {
+  console.log('🚫 Test: Invalid Method Handling');
+
+  const serverProcess = spawn('node', [path.join(__dirname, '../dist/index.js')], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  try {
+    // Send malformed JSON
+    const malformedRequest = '{"jsonrpc":"2.0","id":1,"method":"test"' + '\n'; // Missing closing brace
+
+    const parseErrorPromise = new Promise(resolve => {
+      serverProcess.stdout.on('data', data => {
+        const response = data
+          .toString()
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean);
+
+        for (const line of response) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed?.error?.code === -32700) {
+              console.log('✅ Correctly handled malformed JSON with ParseError (-32700)');
+              resolve(true);
+              return;
+            }
+          } catch {
+            // Ignore non-JSON stdout fragments while waiting for the parse error response.
+          }
+        }
+      });
+    });
+
+    serverProcess.stdin.write(malformedRequest);
+    const parseErrorReceived = await Promise.race([parseErrorPromise, wait(3000)]);
+
+    if (!parseErrorReceived) {
+      throw new Error('Server did not return MCP ParseError (-32700) for malformed JSON');
+    }
+  } finally {
+    serverProcess.kill();
+  }
+}
+
+async function testInvalidParamsHandling() {
+  console.log('📋 Test: Invalid Parameters Handling');
+
+  const serverProcess = spawn('node', [path.join(__dirname, '../dist/index.js')], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  try {
+    // Initialize server
+    const initRequest =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '1.0.0' },
+        },
+      }) + '\n';
+
+    serverProcess.stdin.write(initRequest);
+    await wait(200);
+
+    // Test various invalid parameter scenarios
+    const testCases = [
+      {
+        name: 'Empty thought',
+        params: {
+          name: 'plan-audit-map',
+          arguments: {
+            thought: '',
+            thought_number: 1,
+            total_thoughts: 1,
+            next_thought_needed: false,
+          },
+        },
+      },
+      {
+        name: 'Invalid thought_number',
+        params: {
+          name: 'plan-audit-map',
+          arguments: {
+            thought: 'Test',
+            thought_number: 0,
+            total_thoughts: 1,
+            next_thought_needed: false,
+          },
+        },
+      },
+      {
+        name: 'Missing required fields',
+        params: {
+          name: 'plan-audit-map',
+          arguments: {
+            thought: 'Test',
+            // Missing other required fields
+          },
+        },
+      },
+    ];
+
+    for (const testCase of testCases) {
+      const request =
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: Math.floor(Math.random() * 1000),
+          method: 'tools/call',
+          params: testCase.params,
+        }) + '\n';
+
+      serverProcess.stdin.write(request);
+      await wait(100);
+    }
+
+    console.log('✅ Invalid parameter tests sent (should return -32602 errors)');
+  } finally {
+    serverProcess.kill();
+  }
+}
+
+async function testTransportCompliance() {
+  console.log('🚇 Test: Transport Layer Compliance');
+
+  // Test that server properly handles stdio transport
+  const serverProcess = spawn('node', [path.join(__dirname, '../dist/index.js')], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  try {
+    let stdoutReceived = false;
+    let stderrReceived = false;
+
+    serverProcess.stdout.on('data', data => {
+      if (data.toString().trim()) {
+        stdoutReceived = true;
+      }
+    });
+
+    serverProcess.stderr.on('data', data => {
+      if (data.toString().trim()) {
+        stderrReceived = true;
+      }
+    });
+
+    // Send a request
+    const request =
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '1.0.0' },
+        },
+      }) + '\n';
+
+    serverProcess.stdin.write(request);
+    await wait(3000);
+
+    // Verify transport behavior
+    if (stdoutReceived && stderrReceived) {
+      console.log('✅ Server correctly uses stdout for JSON-RPC and stderr for logging');
+    } else if (stdoutReceived && !stderrReceived) {
+      console.log('⚠️ Server uses stdout for JSON-RPC but no stderr logging detected');
+    } else if (!stdoutReceived && stderrReceived) {
+      console.log('⚠️ Server logged to stderr before stdout response was observed');
+    } else {
+      console.log('⚠️ No transport activity detected during the observation window');
+    }
+  } finally {
+    serverProcess.kill();
+  }
+}
+
+// Run the compliance tests
+testMcpCompliance().catch(err => {
+  console.error('💥 MCP compliance test failed:', err);
+  process.exit(1);
+});

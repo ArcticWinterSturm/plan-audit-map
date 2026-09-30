@@ -1,0 +1,2368 @@
+/**
+ * @fileoverview Cognitive Orchestrator
+ *
+ * This orchestrator integrates cognitive plugins and manages structured
+ * reasoning behavior across the system.
+ *
+ * Key responsibilities:
+ * - Cognitive plugin management and coordination
+ * - Context analysis and cognitive state management
+ * - Adaptive learning and self-improvement
+ * - Memory integration and pattern recognition
+ * - Emergent behavior facilitation
+ */
+
+import { EventEmitter } from 'events';
+import { randomUUID } from 'node:crypto';
+import { ErrorSeverity, handleError } from '../utils/error-handler.js';
+import { SecureLogger } from '../utils/secure-logger.js';
+import { CognitiveCircularBuffer, BufferFactory } from '../utils/circular-buffer.js';
+import { ErrorBoundary, ErrorBoundaryFactory } from '../utils/error-boundary.js';
+import {
+  CognitivePluginManager,
+  CognitiveContext,
+  PluginIntervention,
+  CognitivePlugin,
+  PluginMetrics,
+} from './plugin-system.js';
+import { MetacognitivePlugin } from './plugins/metacognitive-plugin.js';
+import { PersonaPlugin } from './plugins/persona-plugin.js';
+import { MemoryStore, StoredThought, ReasoningSession } from '../memory/memory-store.js';
+import { ValidatedThoughtData } from '../server.js';
+import {
+  StateTracker,
+  CognitiveState,
+  HypothesisLedgerEntry,
+  ReasoningMode,
+  ReasoningModeShift,
+} from './state-tracker.js';
+import { InsightDetector, CognitiveInsight } from './insight-detector.js';
+import { LearningManager } from './learning-manager.js';
+import { DependencyContainer, ServiceTokens, Disposable } from './dependency-container.js';
+import { StateService } from '../state/state-service.js';
+import { renderParaphrase, fillSlots } from '../utils/paraphrase.js';
+import {
+  POOL_EXPLORATION_GUIDANCE, POOL_VALIDATION_GUIDANCE, POOL_REVISION_GUIDANCE,
+  POOL_BRANCHING_GUIDANCE, POOL_CONVERGENCE_GUIDANCE,
+  POOL_TOP_HYPOTHESIS_RATIONALE, POOL_REVISION_ACTIONS, POOL_REVISION_RATIONALES,
+  POOL_BRANCHING_ACTIONS, POOL_BRANCHING_RATIONALES,
+  POOL_CONVERGENCE_ACTIONS, POOL_CONVERGENCE_RATIONALES,
+  POOL_LOOP_LOW_CONF_ACTIONS, POOL_LOOP_LOW_CONF_RATIONALES,
+  POOL_EXPLORATION_ACTIONS, POOL_EXPLORATION_RATIONALES,
+  POOL_FALLBACK_TOP_HYP_ACTIONS, POOL_FALLBACK_TOP_HYP_RATIONALES,
+  POOL_FALLBACK_CONVERGENCE_ACTIONS, POOL_FALLBACK_CONVERGENCE_RATIONALES,
+  POOL_FALLBACK_BRANCH_ACTIONS, POOL_FALLBACK_BRANCH_RATIONALES,
+  POOL_FALLBACK_COMPLEXITY_ACTIONS, POOL_FALLBACK_COMPLEXITY_RATIONALES,
+  POOL_FALLBACK_DEFAULT_ACTIONS, POOL_FALLBACK_DEFAULT_RATIONALES,
+  POOL_DEADLINE_ACTIONS, POOL_DEADLINE_RATIONALES,
+  POOL_CONVERGE_DEFER_ACTIONS, POOL_CONVERGE_DEFER_RATIONALES,
+  POOL_WEAK_SIGNAL_DEFER_ACTIONS, POOL_WEAK_SIGNAL_DEFER_RATIONALES,
+  POOL_DEFER_BRANCH_ACTIONS, POOL_DEFER_BRANCH_RATIONALES,
+  POOL_DEFER_DEFAULT_ACTIONS, POOL_DEFER_DEFAULT_RATIONALES,
+  POOL_DEFAULT_RANKINGS, POOL_DEFAULT_RANKING_RATIONALES,
+  POOL_VALIDATION_ACTIONS,
+  POOL_MODE_SHIFT_REVISION, POOL_MODE_SHIFT_BRANCHING,
+  POOL_MODE_SHIFT_NEAR_END, POOL_MODE_SHIFT_LOOPING, POOL_MODE_SHIFT_EXPLORATION,
+  POOL_REC_TOP_HYPOTHESIS,
+  POOL_DECISION_FOCUS_RATIONALE,
+} from '../utils/paraphrase-pools.js';
+
+/**
+ * Orchestrator configuration
+ */
+export interface OrchestratorConfig {
+  // Plugin management
+  max_concurrent_interventions: number;
+  intervention_cooldown_ms: number;
+  adaptive_plugin_selection: boolean;
+
+  // Learning settings
+  learning_rate: number;
+  memory_integration_enabled: boolean;
+  pattern_recognition_threshold: number;
+  adaptive_learning_enabled: boolean;
+
+  // Emergence settings
+  emergence_detection_enabled: boolean;
+  breakthrough_detection_sensitivity: number;
+  insight_cultivation_enabled: boolean;
+
+  // Performance settings
+  performance_monitoring_enabled: boolean;
+  self_optimization_enabled: boolean;
+  cognitive_load_balancing: boolean;
+}
+
+export interface RankedAction {
+  action: string;
+  rationale: string;
+  signals: string[];
+}
+
+export interface ActionRanking {
+  primary: RankedAction;
+  fallback: RankedAction;
+  do_not_do_yet: RankedAction;
+}
+
+const GENERIC_REDUCED_FUNCTIONALITY_RECOMMENDATION =
+  'Cognitive processing completed with reduced functionality due to an internal error.';
+
+/**
+ * Main Cognitive Orchestrator with Dependency Injection
+ */
+export class CognitiveOrchestrator extends EventEmitter implements Disposable {
+  private container: DependencyContainer;
+  private pluginManager!: CognitivePluginManager;
+  private memoryStore?: MemoryStore;
+  private cognitiveState!: CognitiveState;
+  private stateTracker!: StateTracker;
+  private insightDetector!: InsightDetector;
+  private learningManager!: LearningManager;
+  private logger!: SecureLogger;
+  private config!: OrchestratorConfig;
+  private stateService!: StateService;
+
+  // Plugin instances - injected
+  private metacognitivePlugin!: MetacognitivePlugin;
+  private personaPlugin!: PersonaPlugin;
+
+  // State tracking with memory bounds
+  private sessionHistory: Map<string, ReasoningSession> = new Map();
+  private interventionHistory!: CognitiveCircularBuffer<PluginIntervention>;
+  private insightHistory!: CognitiveCircularBuffer<CognitiveInsight>;
+  private lastInterventionTime: number = 0;
+  private thoughtOutputHistory!: CognitiveCircularBuffer<string>;
+
+  // Error boundaries for resilient operation
+  private pluginBoundary!: ErrorBoundary;
+  private memoryBoundary!: ErrorBoundary;
+  private generalBoundary!: ErrorBoundary;
+
+  // Memory management limits
+  private readonly MAX_SESSION_HISTORY = 100;
+
+  constructor(container: DependencyContainer) {
+    super();
+    this.container = container;
+  }
+
+  /**
+   * Initialize the orchestrator with dependency injection
+   * This replaces the constructor logic to support async initialization
+   */
+  async initialize(): Promise<void> {
+    // Resolve all dependencies from container
+    this.config = await this.container.resolve<OrchestratorConfig>(
+      ServiceTokens.ORCHESTRATOR_CONFIG
+    );
+    this.logger = await this.container.resolve<SecureLogger>(ServiceTokens.LOGGER);
+    this.memoryStore = await this.container.resolve<MemoryStore>(ServiceTokens.MEMORY_STORE);
+    this.stateService = await this.container.resolve<StateService>(ServiceTokens.STATE_SERVICE);
+
+    // Initialize state management
+    this.stateTracker = await this.container.resolve<StateTracker>(ServiceTokens.STATE_TRACKER);
+    this.cognitiveState = this.stateTracker.getState();
+    this.learningManager = await this.container.resolve<LearningManager>(
+      ServiceTokens.LEARNING_MANAGER
+    );
+    this.insightDetector = await this.container.resolve<InsightDetector>(
+      ServiceTokens.INSIGHT_DETECTOR
+    );
+
+    // Initialize plugin system
+    this.pluginManager = await this.container.resolve<CognitivePluginManager>(
+      ServiceTokens.PLUGIN_MANAGER
+    );
+    this.metacognitivePlugin = await this.container.resolve<MetacognitivePlugin>(
+      ServiceTokens.METACOGNITIVE_PLUGIN
+    );
+    this.personaPlugin = await this.container.resolve<PersonaPlugin>(ServiceTokens.PERSONA_PLUGIN);
+
+    // Initialize utilities
+    const bufferFactory = await this.container.resolve<typeof BufferFactory>(
+      ServiceTokens.BUFFER_FACTORY
+    );
+    const errorBoundaryFactory = await this.container.resolve<typeof ErrorBoundaryFactory>(
+      ServiceTokens.ERROR_BOUNDARY_FACTORY
+    );
+
+    // Initialize memory-bounded circular buffers
+    this.interventionHistory = bufferFactory.createInterventionBuffer(1000);
+    this.insightHistory = bufferFactory.createInsightBuffer(500);
+    this.thoughtOutputHistory = bufferFactory.createThoughtBuffer(2000);
+
+    // Initialize error boundaries for resilient operation
+    this.pluginBoundary = errorBoundaryFactory.createPluginBoundary();
+    this.memoryBoundary = errorBoundaryFactory.createMemoryBoundary();
+    this.generalBoundary = errorBoundaryFactory.createExternalBoundary();
+
+    // Set up plugin relationships
+    this.setupPluginRelationships();
+
+    // Set up event listeners
+    this.setupEventListeners();
+
+    // Complete state service initialization with orchestrator
+    await this.finalizeStateServiceInitialization();
+
+    console.error('Cognitive Orchestrator initialized with dependency injection');
+  }
+
+  /**
+   * Complete state service initialization with orchestrator dependencies
+   */
+  private async finalizeStateServiceInitialization(): Promise<void> {
+    try {
+      // Initialize state service with orchestrator dependencies
+      await this.stateService.initialize({
+        orchestrator: this,
+        memoryStore: this.memoryStore,
+      });
+
+      // Set up state synchronization
+      this.setupStateSync();
+    } catch (error) {
+      console.error(' Failed to finalize state service initialization:', error);
+    }
+  }
+
+  /**
+   * Set up bidirectional state synchronization
+   */
+  private setupStateSync(): void {
+    // Subscribe to cognitive state changes for performance monitoring
+    this.on('thought_processed', event => {
+      // Record request performance
+      this.stateService.recordRequest(event.processing_time, true);
+
+      const currentSession = this.stateService.getState().session;
+
+      // Update cognitive state in unified state
+      this.stateService.updateState(
+        {
+          cognitive: event.cognitiveState,
+          session: {
+            ...currentSession,
+            currentSessionId: event.cognitiveState.session_id,
+          },
+        },
+        'cognitive_orchestrator'
+      );
+    });
+
+    // Subscribe to orchestration errors for performance tracking
+    this.on('orchestration_error', () => {
+      this.stateService.recordRequest(0, false);
+    });
+  }
+
+  /**
+   * Process a thought with full cognitive orchestration
+   */
+  async processThought(
+    thoughtData: ValidatedThoughtData,
+    sessionContext?: Partial<ReasoningSession>
+  ): Promise<{
+    interventions: PluginIntervention[];
+    insights: CognitiveInsight[];
+    cognitiveState: CognitiveState;
+    recommendations: string[];
+    actionRanking: ActionRanking;
+  }> {
+    return this.generalBoundary.execute(
+      async () => this.processThoughtInternal(thoughtData, sessionContext),
+      {
+        component: 'CognitiveOrchestrator',
+        method: 'processThought',
+        input: { thoughtData, sessionContext },
+      },
+      async (error, context) => {
+        // Fallback: return minimal safe response
+        console.error(' Cognitive processing failed, returning fallback response');
+        return {
+          interventions: [],
+          insights: [],
+          cognitiveState: this.snapshotCognitiveState(),
+          recommendations: [GENERIC_REDUCED_FUNCTIONALITY_RECOMMENDATION],
+          actionRanking: this.buildDefaultActionRanking(thoughtData),
+        };
+      }
+    );
+  }
+
+  private async processThoughtInternal(
+    thoughtData: ValidatedThoughtData,
+    sessionContext?: Partial<ReasoningSession>
+  ): Promise<{
+    interventions: PluginIntervention[];
+    insights: CognitiveInsight[];
+    cognitiveState: CognitiveState;
+    recommendations: string[];
+    actionRanking: ActionRanking;
+  }> {
+    const startTime = Date.now();
+
+    try {
+      // Update cognitive state with error boundary
+      await this.generalBoundary.execute(
+        () => this.updateCognitiveState(thoughtData, sessionContext),
+        { component: 'CognitiveOrchestrator', method: 'updateCognitiveState' }
+      );
+
+      // Build cognitive context with error boundary
+      const context = await this.generalBoundary.execute(
+        () => this.buildCognitiveContext(thoughtData, sessionContext),
+        { component: 'CognitiveOrchestrator', method: 'buildCognitiveContext' }
+      );
+
+      // Check intervention cooldown
+      if (Date.now() - this.lastInterventionTime < this.config.intervention_cooldown_ms) {
+        return {
+          interventions: [],
+          insights: [],
+          cognitiveState: this.snapshotCognitiveState(),
+          recommendations: ['Cognitive cooldown active - allowing natural processing'],
+          actionRanking: this.buildDefaultActionRanking(thoughtData),
+        };
+      }
+
+      // Orchestrate cognitive interventions with plugin error boundary
+      const interventions = await this.pluginBoundary.execute(
+        () => this.orchestrateInterventions(context),
+        { component: 'CognitiveOrchestrator', method: 'orchestrateInterventions' },
+        async error => {
+          console.error(' Plugin orchestration failed, using fallback');
+          return []; // Return empty interventions as fallback
+        }
+      );
+
+      // Detect insights and emergent patterns with error boundary
+      const insights = await this.generalBoundary.execute(
+        () => this.detectInsights(context, interventions),
+        { component: 'CognitiveOrchestrator', method: 'detectInsights' },
+        async error => {
+          console.error(' Insight detection failed, using fallback');
+          return []; // Return empty insights as fallback
+        }
+      );
+
+      this.updateHypothesisLedger(thoughtData, context, insights);
+      this.updateReasoningMode(thoughtData, context, insights);
+      const actionRanking = this.buildActionRanking(thoughtData, context, interventions, insights);
+
+      // Generate recommendations with error boundary
+      const recommendations = await this.generalBoundary.execute(
+        () =>
+          this.generateRecommendations(
+            thoughtData,
+            context,
+            interventions,
+            insights,
+            actionRanking
+          ),
+        { component: 'CognitiveOrchestrator', method: 'generateRecommendations' },
+        async error => {
+          console.error(' Recommendation generation failed, using fallback');
+          return [
+            'Cognitive processing completed with reduced functionality due to internal errors',
+          ];
+        }
+      );
+
+      // Record output for reflection (secure logging)
+      const thoughtContent = interventions.map(i => i.content).join('\n');
+      this.thoughtOutputHistory.push(thoughtContent);
+
+      // Log cognitive output securely
+      await this.logger.logThought(thoughtContent, 'CognitiveOrchestrator', 'processThought', {
+        session_id: this.cognitiveState.session_id,
+        thought_count: this.cognitiveState.thought_count,
+        intervention_count: interventions.length,
+        insight_count: insights.length,
+      });
+
+      // Enforce memory limits periodically
+      if (this.cognitiveState.thought_count % 10 === 0) {
+        this.enforceMemoryLimits();
+      }
+
+      // Update memory if available with error boundary
+      if (this.memoryStore) {
+        await this.memoryBoundary.execute(
+          () => this.updateMemory(thoughtData, context, interventions, insights),
+          { component: 'CognitiveOrchestrator', method: 'updateMemory' },
+          async error => {
+            console.error(' Memory update failed, continuing without persistence');
+            // Continue without memory update
+          }
+        );
+      }
+
+      // Learn and adapt with error boundary
+      await this.generalBoundary.execute(
+        () => this.learnAndAdapt(context, interventions, insights),
+        { component: 'CognitiveOrchestrator', method: 'learnAndAdapt' },
+        async error => {
+          console.error(' Learning adaptation failed, continuing without learning updates');
+          // Continue without learning updates
+        }
+      );
+
+      // Update intervention time
+      if (interventions.length > 0) {
+        this.lastInterventionTime = Date.now();
+      }
+
+      const processingTime = Date.now() - startTime;
+
+      // Emit orchestration event
+      this.emit('thought_processed', {
+        thought: thoughtData,
+        interventions,
+        insights,
+        cognitiveState: this.snapshotCognitiveState(),
+        processing_time: processingTime,
+      });
+
+      return {
+        interventions,
+        insights,
+        cognitiveState: this.snapshotCognitiveState(),
+        recommendations,
+        actionRanking,
+      };
+    } catch (error) {
+      handleError('CognitiveOrchestrator', 'processThought', error, ErrorSeverity.ERROR, {
+        thoughtNumber: thoughtData.thought_number,
+        sessionId: this.cognitiveState.session_id,
+      });
+
+      this.emit('orchestration_error', { error, thought: thoughtData });
+
+      // For critical components, we should propagate the error
+      if (this.cognitiveState.thought_count < 1) {
+        // First thought failure is critical
+        throw error;
+      }
+
+      return {
+        interventions: [],
+        insights: [],
+        cognitiveState: this.snapshotCognitiveState(),
+        recommendations: [GENERIC_REDUCED_FUNCTIONALITY_RECOMMENDATION],
+        actionRanking: this.buildDefaultActionRanking(thoughtData),
+      };
+    }
+  }
+
+  /**
+   * Provide feedback on intervention effectiveness
+   */
+  async provideFeedback(
+    interventions: PluginIntervention[],
+    outcome: 'success' | 'failure' | 'partial',
+    impact_score: number,
+    context: CognitiveContext
+  ): Promise<void> {
+    try {
+      // Provide feedback to plugin manager
+      await this.pluginManager.provideFeedback(interventions, outcome, impact_score, context);
+
+      // Update cognitive state based on feedback
+      this.stateTracker.updateFromFeedback(outcome, impact_score);
+
+      // Learn from feedback
+      await this.learnFromFeedback(interventions, outcome, impact_score, context);
+
+      // Check for adaptation triggers
+      this.checkAdaptationTriggers(outcome, impact_score);
+    } catch (error) {
+      handleError('CognitiveOrchestrator', 'provideFeedback', error, ErrorSeverity.WARNING, {
+        outcome,
+        impactScore: impact_score,
+        sessionId: this.cognitiveState.session_id,
+      });
+      // Feedback errors shouldn't break the flow but should be monitored
+    }
+  }
+
+  /**
+   * Apply an outcome feedback signal to the live cognitive state. Durable
+   * outcome persistence (confidence calibration, learning patterns) is handled
+   * by the server against its SQLiteStore — this method only updates the
+   * orchestrator's in-process cognitive state. Best-effort: never throws.
+   */
+  recordReasoningOutcome(params: {
+    sessionId: string;
+    outcome: 'success' | 'failure' | 'partial';
+    outcomeScore: number;
+  }): void {
+    const { sessionId, outcome, outcomeScore } = params;
+    try {
+      this.stateTracker.updateFromFeedback(outcome, outcomeScore);
+      this.emit('reasoning_outcome_recorded', { sessionId, outcome, outcomeScore });
+    } catch (error) {
+      handleError('CognitiveOrchestrator', 'recordReasoningOutcome', error, ErrorSeverity.WARNING, {
+        sessionId,
+        outcome,
+      });
+    }
+  }
+
+  /**
+   * Get current cognitive state
+   */
+  getCognitiveState(): CognitiveState {
+    return this.snapshotCognitiveState();
+  }
+
+  /**
+   * Get unified system state
+   */
+  getUnifiedState() {
+    return this.stateService.getState();
+  }
+
+  /**
+   * Get system health overview
+   */
+  getSystemHealth() {
+    return this.stateService.getSystemHealth();
+  }
+
+  /**
+   * Get state statistics
+   */
+  getStateStats() {
+    return this.stateService.getStateStats();
+  }
+
+  /**
+   * Get plugin performance summary
+   */
+  getPluginPerformance(): Record<string, PluginMetrics> {
+    return this.pluginManager.getPerformanceSummary();
+  }
+
+  /**
+   * Add a custom cognitive plugin
+   */
+  addPlugin(plugin: CognitivePlugin): void {
+    this.pluginManager.registerPlugin(plugin);
+  }
+
+  /**
+   * Remove a cognitive plugin
+   */
+  removePlugin(pluginId: string): boolean {
+    return this.pluginManager.unregisterPlugin(pluginId);
+  }
+
+  /**
+   * Update orchestrator configuration
+   */
+  updateConfig(newConfig: Partial<OrchestratorConfig>): void {
+    this.config = { ...this.config, ...newConfig };
+    this.emit('config_updated', this.config);
+  }
+
+  /**
+   * Get insight history
+   */
+  getInsightHistory(): CognitiveInsight[] {
+    return this.insightHistory.getAll();
+  }
+
+  /**
+   * Reset cognitive state (useful for testing)
+   */
+  async reset(): Promise<void> {
+    // Reset state tracker
+    this.stateTracker = await this.container.resolve<StateTracker>(ServiceTokens.STATE_TRACKER);
+    this.cognitiveState = this.stateTracker.getState();
+
+    // Reset learning manager
+    this.learningManager = await this.container.resolve<LearningManager>(
+      ServiceTokens.LEARNING_MANAGER
+    );
+
+    // Reset insight detector
+    this.insightDetector = await this.container.resolve<InsightDetector>(
+      ServiceTokens.INSIGHT_DETECTOR
+    );
+
+    this.sessionHistory.clear();
+    this.interventionHistory.clear();
+    this.insightHistory.clear();
+    this.thoughtOutputHistory.clear();
+    this.lastInterventionTime = 0;
+  }
+
+  // Private methods
+
+  /**
+   * Update cognitive state based on new thought
+   */
+  private async updateCognitiveState(
+    thoughtData: ValidatedThoughtData,
+    sessionContext?: Partial<ReasoningSession>
+  ): Promise<void> {
+    await this.stateTracker.update(thoughtData, sessionContext);
+  }
+
+  /**
+   * Build comprehensive cognitive context
+   */
+  private async buildCognitiveContext(
+    thoughtData: ValidatedThoughtData,
+    sessionContext?: Partial<ReasoningSession>
+  ): Promise<CognitiveContext> {
+    // Get thought history from memory or session
+    const thoughtHistory = await this.getThoughtHistory();
+
+    // Get similar past sessions
+    const similarSessions = await this.getSimilarSessions(sessionContext);
+
+    // Extract success and failure patterns
+    const { successPatterns, failurePatterns } = await this.extractPatterns();
+
+    // Determine domain
+    const domain = this.inferDomain(thoughtData, sessionContext);
+
+    // Calculate urgency
+    const urgency = this.calculateUrgency(thoughtData, sessionContext);
+
+    // Get available tools (this would be expanded based on actual system capabilities)
+    const availableTools = ['plan-audit-map', 'memory-store', 'pattern-recognition'];
+
+    const context: CognitiveContext = {
+      current_thought: thoughtData.thought,
+      thought_history: thoughtHistory,
+      session: sessionContext || {},
+      domain,
+      complexity: this.cognitiveState.current_complexity,
+      urgency,
+      confidence_level: this.cognitiveState.confidence_trajectory.slice(-1)[0] || 0.5,
+      available_tools: availableTools,
+      time_constraints: this.extractTimeConstraints(thoughtData, sessionContext),
+      similar_past_sessions: similarSessions,
+      success_patterns: successPatterns,
+      failure_patterns: failurePatterns,
+      curiosity_level: this.cognitiveState.curiosity_level,
+      frustration_level: this.cognitiveState.frustration_level,
+      engagement_level: this.cognitiveState.engagement_level,
+      metacognitive_awareness: this.cognitiveState.metacognitive_awareness,
+      scope_uncertainty: this.cognitiveState.scope_uncertainty,
+      creative_pressure: this.cognitiveState.creative_pressure,
+      prompt_understanding: this.cognitiveState.prompt_understanding,
+      last_thought_output: this.thoughtOutputHistory.getRecent(1)[0] || '',
+      context_trace: this.thoughtOutputHistory.getRecent(5),
+    };
+
+    return context;
+  }
+
+  /**
+   * Orchestrate cognitive interventions
+   */
+  private async orchestrateInterventions(context: CognitiveContext): Promise<PluginIntervention[]> {
+    // Use plugin manager to orchestrate interventions
+    const interventions = await this.pluginManager.orchestrate(context);
+
+    // Store interventions in history (circular buffer handles bounds automatically)
+    for (const intervention of interventions) {
+      this.interventionHistory.push(intervention);
+    }
+
+    return interventions;
+  }
+
+  /**
+   * Detect cognitive insights and emergent patterns
+   */
+  private async detectInsights(
+    context: CognitiveContext,
+    interventions: PluginIntervention[]
+  ): Promise<CognitiveInsight[]> {
+    if (!this.config.emergence_detection_enabled) {
+      return [];
+    }
+
+    const insights = await this.insightDetector.detectInsights(context, interventions);
+    for (const insight of insights) {
+      this.insightHistory.push(insight);
+    }
+    return insights;
+  }
+
+  /**
+   * Generate cognitive recommendations
+   */
+  private async generateRecommendations(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    interventions: PluginIntervention[],
+    insights: CognitiveInsight[],
+    actionRanking: ActionRanking
+  ): Promise<string[]> {
+    const recommendations: string[] = [];
+    const remainingThoughts = Math.max(0, thoughtData.total_thoughts - thoughtData.thought_number);
+    const repeatedReasoning = this.findRepeatedReasoningSignal(context, thoughtData.thought);
+    const deadlineHours = this.getHoursUntilDeadline(context);
+    const topHypothesis = this.getTopUnresolvedHypothesis();
+    const currentMode = this.cognitiveState.reasoning_mode || 'exploration';
+    const latestModeShift = this.getLatestModeShift();
+
+    if (latestModeShift && latestModeShift.thought_number === thoughtData.thought_number) {
+      recommendations.push(
+        `Reasoning mode shifted from ${latestModeShift.from} to ${latestModeShift.to} - ${latestModeShift.reason}`
+      );
+    } else {
+      recommendations.push(
+        `Current reasoning mode: ${currentMode} - ${this.getReasoningModeGuidance(currentMode)}`
+      );
+    }
+
+    // Complexity-based recommendations
+    if (context.complexity >= 8) {
+      recommendations.push(
+        'High complexity detected - write down the key constraints, interfaces, and failure modes before moving on'
+      );
+    }
+
+    // Confidence-based recommendations
+    if (context.confidence_level < 0.35) {
+      recommendations.push(
+        'Low confidence detected - verify one assumption with evidence before adding more scope'
+      );
+    }
+
+    // Intervention-based recommendations
+    if (interventions.length === 0 && context.complexity >= 7) {
+      recommendations.push(
+        'Complex problem with no cognitive interventions - explicitly check for missing constraints or an untested alternative'
+      );
+    }
+
+    const primaryIntervention = interventions[0];
+    if (primaryIntervention?.metadata.activation_context) {
+      recommendations.push(
+        `Active intervention: ${primaryIntervention.metadata.plugin_id} engaged now because ${primaryIntervention.metadata.activation_context.reason}`
+      );
+    }
+
+    // Insight-based recommendations
+    if (insights.length > 0) {
+      recommendations.push(
+        `${insights.length} cognitive insight(s) detected - validate the highest-priority insight before expanding further`
+      );
+    }
+
+    if (topHypothesis) {
+      recommendations.push(
+        renderParaphrase('rec:topHypothesis', POOL_REC_TOP_HYPOTHESIS, {
+          short: this.summarizeHypothesis(topHypothesis.statement),
+          hypStatus: topHypothesis.status,
+          hypConfPct: Math.round(topHypothesis.confidence * 100),
+          step: topHypothesis.next_validation_step,
+        })
+      );
+    }
+
+    // Emotional state recommendations
+    if (context.frustration_level && context.frustration_level > 0.7) {
+      recommendations.push(
+        'High frustration detected - consider taking a break or changing approach'
+      );
+    }
+
+    // Metacognitive recommendations
+    if (context.metacognitive_awareness < 0.4) {
+      recommendations.push(
+        'Low metacognitive awareness - name the assumption that would invalidate the current plan'
+      );
+    }
+
+    if (thoughtData.is_revision) {
+      recommendations.push(
+        'Revision detected - compare the revised assumption against the original and note what changed'
+      );
+    }
+
+    if (thoughtData.branch_from_thought) {
+      recommendations.push(
+        'Branch exploration active - define the decision criteria that will determine whether this branch beats the main path'
+      );
+    }
+
+    if (deadlineHours !== undefined && deadlineHours <= 2) {
+      recommendations.push(
+        'A near deadline is in play - prioritize the next concrete action and defer speculative exploration'
+      );
+    }
+
+    if (repeatedReasoning) {
+      recommendations.push(
+        `This thought is highly similar to a recent step (${Math.round(repeatedReasoning.similarity * 100)}% overlap) - add new evidence, test a different assumption, or converge on a decision`
+      );
+    }
+
+    if (remainingThoughts <= 1 && thoughtData.next_thought_needed) {
+      recommendations.push(
+        'You are near the planned end of the sequence - converge on a decision or revise total_thoughts explicitly'
+      );
+    }
+
+    recommendations.push(`Primary next action: ${actionRanking.primary.action}`);
+
+    if (recommendations.length === 0) {
+      recommendations.push(
+        thoughtData.next_thought_needed
+          ? 'Continue with the next thought by testing the strongest remaining assumption'
+          : 'Summarize the decision, supporting evidence, and immediate next action'
+      );
+    }
+
+    return this.dedupeRecommendations(recommendations).slice(0, 5);
+  }
+
+  /**
+   * Update memory with current cognitive state
+   */
+  private async updateMemory(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    interventions: PluginIntervention[],
+    insights: CognitiveInsight[]
+  ): Promise<void> {
+    if (!this.memoryStore) return;
+
+    try {
+      // Create stored thought
+      const storedThought: StoredThought = {
+        id: this.generateThoughtId(),
+        thought: thoughtData.thought,
+        thought_number: thoughtData.thought_number,
+        total_thoughts: thoughtData.total_thoughts,
+        next_thought_needed: thoughtData.next_thought_needed,
+        is_revision: thoughtData.is_revision,
+        revises_thought: thoughtData.revises_thought,
+        branch_from_thought: thoughtData.branch_from_thought,
+        branch_id: thoughtData.branch_id,
+        needs_more_thoughts: thoughtData.needs_more_thoughts,
+        timestamp: new Date(),
+        session_id: this.cognitiveState.session_id,
+        confidence: context.confidence_level,
+        domain: context.domain,
+        complexity: context.complexity,
+        context: {
+          available_tools: context.available_tools,
+          time_constraints: context.time_constraints
+            ? {
+                urgency: 'medium' as const,
+                deadline: context.time_constraints.deadline,
+              }
+            : undefined,
+          problem_type: context.domain,
+          cognitive_load: this.calculateCognitiveLoad(interventions),
+        },
+        output: interventions.map(i => i.content).join('\n'),
+        context_trace: this.thoughtOutputHistory.getRecent(5),
+        tags: this.generateTags(thoughtData, context, interventions, insights),
+        patterns_detected: insights.map(insight => insight.type),
+        outcome_quality: this.assessOutcomeQuality(context, interventions, insights),
+      };
+
+      await this.memoryStore.storeThought(storedThought);
+    } catch (error) {
+      handleError('CognitiveOrchestrator', 'updateMemory', error, ErrorSeverity.WARNING, {
+        thoughtId: thoughtData.thought,
+        sessionId: this.cognitiveState.session_id,
+      });
+      // Memory errors are not critical, but we should track them
+    }
+  }
+
+  /**
+   * Learn and adapt from current processing
+   */
+  private async learnAndAdapt(
+    context: CognitiveContext,
+    interventions: PluginIntervention[],
+    insights: CognitiveInsight[]
+  ): Promise<void> {
+    if (!this.config.adaptive_learning_enabled) return;
+
+    try {
+      this.learningManager.learnInterventionPatterns(context, interventions);
+      this.learningManager.learnInsightPatterns(context, insights);
+      this.learningManager.updatePerformanceMetrics(context, interventions, insights);
+      if (this.shouldAdapt()) {
+        await this.performAdaptation();
+      }
+    } catch (error) {
+      console.error('Error in learning and adaptation:', error);
+    }
+  }
+
+  // Placeholder methods for memory and learning integration
+  private async getThoughtHistory(): Promise<StoredThought[]> {
+    if (!this.memoryStore) return [];
+
+    try {
+      const query = {
+        session_ids: [this.cognitiveState.session_id],
+        limit: 10,
+        sort_by: 'timestamp' as const,
+        sort_order: 'desc' as const,
+      };
+      return await this.memoryStore.queryThoughts(query);
+    } catch (error) {
+      console.error('Error getting thought history:', error);
+      return [];
+    }
+  }
+
+  private getHoursUntilDeadline(context: CognitiveContext): number | undefined {
+    if (!context.time_constraints?.deadline) {
+      return undefined;
+    }
+
+    return (context.time_constraints.deadline.getTime() - Date.now()) / (1000 * 60 * 60);
+  }
+
+  private findRepeatedReasoningSignal(
+    context: CognitiveContext,
+    thought: string
+  ): { previousThought: string; similarity: number } | null {
+    const normalizedCurrent = this.normalizeThought(thought);
+    if (!normalizedCurrent) {
+      return null;
+    }
+
+    const recentThoughts = context.thought_history.slice(0, 5);
+    let strongestMatch: { previousThought: string; similarity: number } | null = null;
+
+    for (const previous of recentThoughts) {
+      const normalizedPrevious = this.normalizeThought(previous.thought);
+      if (!normalizedPrevious) {
+        continue;
+      }
+
+      const similarity = this.calculateThoughtSimilarity(normalizedCurrent, normalizedPrevious);
+      if (!strongestMatch || similarity > strongestMatch.similarity) {
+        strongestMatch = { previousThought: previous.thought, similarity };
+      }
+    }
+
+    return strongestMatch && strongestMatch.similarity >= 0.5 ? strongestMatch : null;
+  }
+
+  private normalizeThought(thought: string): string {
+    return thought
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private calculateThoughtSimilarity(current: string, previous: string): number {
+    if (current === previous) {
+      return 1;
+    }
+
+    const currentTokens = this.getSignificantTokens(current);
+    const previousTokens = this.getSignificantTokens(previous);
+
+    if (currentTokens.size === 0 || previousTokens.size === 0) {
+      return 0;
+    }
+
+    const intersection = [...currentTokens].filter(token => previousTokens.has(token)).length;
+    const union = new Set([...currentTokens, ...previousTokens]).size;
+    const tokenSimilarity = union > 0 ? intersection / union : 0;
+
+    const shorter = current.length < previous.length ? current : previous;
+    const longer = current.length < previous.length ? previous : current;
+    const containment = longer.includes(shorter) ? shorter.length / longer.length : 0;
+
+    return Math.max(tokenSimilarity, containment);
+  }
+
+  private getSignificantTokens(text: string): Set<string> {
+    const stopWords = new Set([
+      'the',
+      'and',
+      'for',
+      'with',
+      'that',
+      'this',
+      'from',
+      'into',
+      'have',
+      'need',
+      'should',
+      'before',
+      'after',
+      'then',
+      'when',
+      'where',
+      'what',
+      'why',
+      'how',
+      'are',
+      'was',
+      'were',
+      'will',
+      'would',
+      'could',
+      'about',
+      'your',
+      'their',
+      'them',
+      'they',
+      'our',
+      'you',
+      'but',
+      'not',
+      'all',
+      'can',
+      'out',
+      'use',
+    ]);
+
+    return new Set(
+      text
+        .split(' ')
+        .map(token => token.trim())
+        .filter(token => token.length > 2 && !stopWords.has(token))
+    );
+  }
+
+  private dedupeRecommendations(recommendations: string[]): string[] {
+    return Array.from(new Set(recommendations));
+  }
+
+  private buildActionRanking(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    interventions: PluginIntervention[],
+    insights: CognitiveInsight[]
+  ): ActionRanking {
+    const remainingThoughts = Math.max(0, thoughtData.total_thoughts - thoughtData.thought_number);
+    const repeatedReasoning = this.findRepeatedReasoningSignal(context, thoughtData.thought);
+    const deadlineHours = this.getHoursUntilDeadline(context);
+    const topHypothesis = this.getTopUnresolvedHypothesis();
+    const mode = this.cognitiveState.reasoning_mode || 'exploration';
+    const decisionFocus = this.extractDecisionFocus(interventions);
+    const signals = this.collectActionSignals(
+      thoughtData,
+      context,
+      insights,
+      topHypothesis,
+      decisionFocus,
+      repeatedReasoning,
+      deadlineHours,
+      remainingThoughts
+    );
+
+    const primary = this.buildPrimaryAction(
+      thoughtData,
+      context,
+      topHypothesis,
+      decisionFocus,
+      mode,
+      repeatedReasoning,
+      remainingThoughts,
+      signals
+    );
+    const fallback = this.buildFallbackAction(
+      thoughtData,
+      context,
+      topHypothesis,
+      decisionFocus,
+      mode,
+      repeatedReasoning,
+      deadlineHours,
+      signals
+    );
+    const doNotDoYet = this.buildDeferredAction(
+      thoughtData,
+      context,
+      topHypothesis,
+      decisionFocus,
+      mode,
+      repeatedReasoning,
+      deadlineHours,
+      signals
+    );
+
+    return {
+      primary,
+      fallback,
+      do_not_do_yet: doNotDoYet,
+    };
+  }
+
+  private buildDefaultActionRanking(thoughtData: ValidatedThoughtData): ActionRanking {
+    const slots = {
+      thought_number: thoughtData.thought_number,
+      total: thoughtData.total_thoughts,
+      remaining: thoughtData.total_thoughts - thoughtData.thought_number,
+      history: this.cognitiveState.thought_count,
+    };
+    const idx = Math.floor(Math.random() * POOL_DEFAULT_RANKINGS.length);
+    const ranking = POOL_DEFAULT_RANKINGS[idx];
+    return {
+      primary: {
+        action: fillSlots(ranking.primary, slots),
+        rationale: renderParaphrase('defaultRanking:rationale', POOL_DEFAULT_RANKING_RATIONALES, slots),
+        signals: ['fallback'],
+      },
+      fallback: {
+        action: fillSlots(ranking.fallback, slots),
+        rationale: renderParaphrase('defaultRanking:rationale2', POOL_DEFAULT_RANKING_RATIONALES, slots),
+        signals: ['fallback'],
+      },
+      do_not_do_yet: {
+        action: fillSlots(ranking.do_not_do_yet, slots),
+        rationale: renderParaphrase('defaultRanking:rationale3', POOL_DEFAULT_RANKING_RATIONALES, slots),
+        signals: ['fallback'],
+      },
+    };
+  }
+
+  private collectActionSignals(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    insights: CognitiveInsight[],
+    topHypothesis: HypothesisLedgerEntry | undefined,
+    decisionFocus:
+      | {
+          tradeoff: string;
+          primary_action: string;
+          deferred_action: string;
+        }
+      | undefined,
+    repeatedReasoning: { previousThought: string; similarity: number } | null,
+    deadlineHours: number | undefined,
+    remainingThoughts: number
+  ): string[] {
+    const signals: string[] = [`mode:${this.cognitiveState.reasoning_mode || 'exploration'}`];
+
+    if (topHypothesis) {
+      signals.push(`hypothesis:${topHypothesis.status}`);
+    }
+    if (decisionFocus) {
+      signals.push('persona_tradeoff');
+    }
+    if (context.confidence_level < 0.4) {
+      signals.push('low_confidence');
+    }
+    if (thoughtData.is_revision) {
+      signals.push('revision');
+    }
+    if (thoughtData.branch_from_thought) {
+      signals.push('branching');
+    }
+    if (repeatedReasoning) {
+      signals.push('repeated_reasoning');
+    }
+    if (deadlineHours !== undefined && deadlineHours <= 2) {
+      signals.push('near_deadline');
+    }
+    if (remainingThoughts <= 1) {
+      signals.push('near_sequence_end');
+    }
+    if (insights.length > 0) {
+      signals.push('insight_available');
+    }
+
+    return signals.slice(0, 4);
+  }
+
+  private buildPrimaryAction(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    topHypothesis: HypothesisLedgerEntry | undefined,
+    decisionFocus:
+      | {
+          tradeoff: string;
+          primary_action: string;
+          deferred_action: string;
+        }
+      | undefined,
+    mode: ReasoningMode,
+    repeatedReasoning: { previousThought: string; similarity: number } | null,
+    remainingThoughts: number,
+    signals: string[]
+  ): RankedAction {
+    const hSlots = {
+      short: this.summarizeHypothesis(topHypothesis?.statement),
+      hypStatus: topHypothesis?.status,
+      hypConfPct: topHypothesis ? Math.round(topHypothesis.confidence * 100) : 0,
+      confPct: Math.round(context.confidence_level * 100),
+      history: context.thought_history.length,
+      overlapPct: repeatedReasoning ? Math.round(repeatedReasoning.similarity * 100) : 0,
+      tradeoff: decisionFocus?.tradeoff,
+    };
+    const slots = { ...hSlots, thought_number: thoughtData.thought_number, total: thoughtData.total_thoughts, remaining: remainingThoughts, complexity: context.complexity, mode, branch_from: thoughtData.branch_from_thought };
+
+    if (topHypothesis) {
+      const personalizedValidationAction = this.personalizeValidationAction(topHypothesis);
+      return {
+        action: personalizedValidationAction,
+        rationale: this.appendDecisionFocusRationale(
+          renderParaphrase('buildPrimaryAction:hyp', POOL_TOP_HYPOTHESIS_RATIONALE, slots),
+          decisionFocus
+        ),
+        signals,
+      };
+    }
+
+    if (decisionFocus) {
+      return {
+        action: decisionFocus.primary_action,
+        rationale: renderParaphrase('buildPrimaryAction:decisionFocus', POOL_DECISION_FOCUS_RATIONALE, slots),
+        signals,
+      };
+    }
+
+    if (mode === 'revision') {
+      return {
+        action: renderParaphrase('buildPrimaryAction:revision', POOL_REVISION_ACTIONS, slots),
+        rationale: renderParaphrase('buildPrimaryAction:revision:rat', POOL_REVISION_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (mode === 'branching') {
+      return {
+        action: renderParaphrase('buildPrimaryAction:branch', POOL_BRANCHING_ACTIONS, slots),
+        rationale: renderParaphrase('buildPrimaryAction:branch:rat', POOL_BRANCHING_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (mode === 'convergence' || (!thoughtData.next_thought_needed && remainingThoughts <= 1)) {
+      return {
+        action: renderParaphrase('buildPrimaryAction:converge', POOL_CONVERGENCE_ACTIONS, slots),
+        rationale: renderParaphrase('buildPrimaryAction:converge:rat', POOL_CONVERGENCE_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (repeatedReasoning || context.confidence_level < 0.4) {
+      return {
+        action: renderParaphrase('buildPrimaryAction:loop', POOL_LOOP_LOW_CONF_ACTIONS, slots),
+        rationale: renderParaphrase('buildPrimaryAction:loop:rat', POOL_LOOP_LOW_CONF_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    return {
+      action: renderParaphrase('buildPrimaryAction:explore', POOL_EXPLORATION_ACTIONS, slots),
+      rationale: renderParaphrase('buildPrimaryAction:explore:rat', POOL_EXPLORATION_RATIONALES, slots),
+      signals,
+    };
+  }
+
+  private buildFallbackAction(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    topHypothesis: HypothesisLedgerEntry | undefined,
+    decisionFocus:
+      | {
+          tradeoff: string;
+          primary_action: string;
+          deferred_action: string;
+        }
+      | undefined,
+    mode: ReasoningMode,
+    repeatedReasoning: { previousThought: string; similarity: number } | null,
+    deadlineHours: number | undefined,
+    signals: string[]
+  ): RankedAction {
+    const slots = {
+      short: this.summarizeHypothesis(topHypothesis?.statement),
+      hypStatus: topHypothesis?.status,
+      hypConfPct: topHypothesis ? Math.round(topHypothesis.confidence * 100) : 0,
+      confPct: Math.round(context.confidence_level * 100),
+      history: context.thought_history.length,
+      overlapPct: repeatedReasoning ? Math.round(repeatedReasoning.similarity * 100) : 0,
+      tradeoff: decisionFocus?.tradeoff,
+      thought_number: thoughtData.thought_number,
+      total: thoughtData.total_thoughts,
+      remaining: thoughtData.total_thoughts - thoughtData.thought_number,
+      complexity: context.complexity,
+      mode,
+      branch_from: thoughtData.branch_from_thought,
+      deadline: deadlineHours,
+    };
+
+    if (topHypothesis) {
+      return {
+        action: renderParaphrase('buildFallbackAction:hyp', POOL_FALLBACK_TOP_HYP_ACTIONS, slots),
+        rationale: renderParaphrase('buildFallbackAction:hyp:rat', POOL_FALLBACK_TOP_HYP_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (mode === 'convergence') {
+      return {
+        action: renderParaphrase('buildFallbackAction:converge', POOL_FALLBACK_CONVERGENCE_ACTIONS, slots),
+        rationale: renderParaphrase('buildFallbackAction:converge:rat', POOL_FALLBACK_CONVERGENCE_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (thoughtData.branch_from_thought) {
+      return {
+        action: renderParaphrase('buildFallbackAction:branch', POOL_FALLBACK_BRANCH_ACTIONS, slots),
+        rationale: renderParaphrase('buildFallbackAction:branch:rat', POOL_FALLBACK_BRANCH_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (context.complexity >= 8) {
+      return {
+        action: renderParaphrase('buildFallbackAction:complex', POOL_FALLBACK_COMPLEXITY_ACTIONS, slots),
+        rationale: renderParaphrase('buildFallbackAction:complex:rat', POOL_FALLBACK_COMPLEXITY_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    return {
+      action: renderParaphrase('buildFallbackAction:default', POOL_FALLBACK_DEFAULT_ACTIONS, slots),
+      rationale: renderParaphrase('buildFallbackAction:default:rat', POOL_FALLBACK_DEFAULT_RATIONALES, slots),
+      signals,
+    };
+  }
+
+
+  private buildDeferredAction(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    topHypothesis: HypothesisLedgerEntry | undefined,
+    decisionFocus:
+      | {
+          tradeoff: string;
+          primary_action: string;
+          deferred_action: string;
+        }
+      | undefined,
+    mode: ReasoningMode,
+    repeatedReasoning: { previousThought: string; similarity: number } | null,
+    deadlineHours: number | undefined,
+    signals: string[]
+  ): RankedAction {
+    const slots = {
+      short: this.summarizeHypothesis(topHypothesis?.statement),
+      hypStatus: topHypothesis?.status,
+      hypConfPct: topHypothesis ? Math.round(topHypothesis.confidence * 100) : 0,
+      confPct: Math.round(context.confidence_level * 100),
+      history: context.thought_history.length,
+      overlapPct: repeatedReasoning ? Math.round(repeatedReasoning.similarity * 100) : 0,
+      tradeoff: decisionFocus?.tradeoff,
+      thought_number: thoughtData.thought_number,
+      total: thoughtData.total_thoughts,
+      remaining: thoughtData.total_thoughts - thoughtData.thought_number,
+      complexity: context.complexity,
+      mode,
+      branch_from: thoughtData.branch_from_thought,
+      deadline: deadlineHours,
+    };
+
+    if (deadlineHours !== undefined && deadlineHours <= 2) {
+      return {
+        action: renderParaphrase('buildDeferredAction:deadline', POOL_DEADLINE_ACTIONS, slots),
+        rationale: renderParaphrase('buildDeferredAction:deadline:rat', POOL_DEADLINE_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (mode === 'convergence') {
+      return {
+        action: renderParaphrase('buildDeferredAction:converge', POOL_CONVERGE_DEFER_ACTIONS, slots),
+        rationale: renderParaphrase('buildDeferredAction:converge:rat', POOL_CONVERGE_DEFER_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (repeatedReasoning || context.confidence_level < 0.4) {
+      return {
+        action: renderParaphrase('buildDeferredAction:weak', POOL_WEAK_SIGNAL_DEFER_ACTIONS, slots),
+        rationale: renderParaphrase('buildDeferredAction:weak:rat', POOL_WEAK_SIGNAL_DEFER_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    if (thoughtData.branch_from_thought || topHypothesis?.status === 'weakening') {
+      return {
+        action: renderParaphrase('buildDeferredAction:branch', POOL_DEFER_BRANCH_ACTIONS, slots),
+        rationale: renderParaphrase('buildDeferredAction:branch:rat', POOL_DEFER_BRANCH_RATIONALES, slots),
+        signals,
+      };
+    }
+
+    return {
+      action: renderParaphrase('buildDeferredAction:default', POOL_DEFER_DEFAULT_ACTIONS, slots),
+      rationale: renderParaphrase('buildDeferredAction:default:rat', POOL_DEFER_DEFAULT_RATIONALES, slots),
+      signals,
+    };
+  }
+
+  private personalizeValidationAction(topHypothesis: HypothesisLedgerEntry): string {
+    if (!this.isGenericValidationStep(topHypothesis.next_validation_step)) {
+      return topHypothesis.next_validation_step;
+    }
+
+    return renderParaphrase('personalizeValidation', POOL_VALIDATION_ACTIONS, {
+      short: this.summarizeHypothesis(topHypothesis.statement),
+    });
+  }
+
+  private isGenericValidationStep(step: string): boolean {
+    const normalizedStep = step.trim().toLowerCase();
+    const genericSteps = [
+      'test the weakest assumption in this hypothesis with one concrete piece of evidence.',
+      'validate this insight against one concrete counterexample before relying on it.',
+    ];
+
+    return genericSteps.includes(normalizedStep);
+  }
+
+  private summarizeHypothesis(statement: string | undefined): string {
+    if (!statement) return '(no hypothesis)';
+    const normalized = statement.replace(/\s+/g, ' ').trim();
+    return normalized.length > 100 ? `${normalized.slice(0, 97)}...` : normalized;
+  }
+
+  private extractDecisionFocus(interventions: PluginIntervention[]):
+    | {
+        tradeoff: string;
+        primary_action: string;
+        deferred_action: string;
+      }
+    | undefined {
+    return interventions.find(
+      intervention =>
+        intervention.metadata.plugin_id === 'persona' && intervention.metadata.decision_focus
+    )?.metadata.decision_focus;
+  }
+
+  private appendDecisionFocusRationale(
+    rationale: string,
+    decisionFocus:
+      | {
+          tradeoff: string;
+          primary_action: string;
+          deferred_action: string;
+        }
+      | undefined
+  ): string {
+    if (!decisionFocus) {
+      return rationale;
+    }
+
+    return `${rationale} This also resolves the active persona tradeoff: ${decisionFocus.tradeoff}`;
+  }
+
+  private snapshotCognitiveState(): CognitiveState {
+    return {
+      ...this.cognitiveState,
+      confidence_trajectory: [...(this.cognitiveState.confidence_trajectory || [])],
+      hypothesis_ledger: (this.cognitiveState.hypothesis_ledger || []).map(entry => ({
+        ...entry,
+        supporting_evidence: [...entry.supporting_evidence],
+        contradicting_evidence: [...entry.contradicting_evidence],
+        last_confidence_update: entry.last_confidence_update
+          ? { ...entry.last_confidence_update }
+          : undefined,
+      })),
+      recent_mode_shifts: (this.cognitiveState.recent_mode_shifts || []).map(shift => ({
+        ...shift,
+      })),
+    };
+  }
+
+  private updateReasoningMode(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    insights: CognitiveInsight[]
+  ): void {
+    const previousMode = this.cognitiveState.reasoning_mode || 'exploration';
+    const nextMode = this.inferReasoningMode(thoughtData, context, insights);
+
+    this.cognitiveState.reasoning_mode = nextMode.mode;
+
+    if (previousMode === nextMode.mode) {
+      return;
+    }
+
+    const nextShift: ReasoningModeShift = {
+      from: previousMode,
+      to: nextMode.mode,
+      reason: nextMode.reason,
+      thought_number: thoughtData.thought_number,
+    };
+
+    this.cognitiveState.recent_mode_shifts = [
+      ...(this.cognitiveState.recent_mode_shifts || []),
+      nextShift,
+    ].slice(-5);
+  }
+
+  private inferReasoningMode(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    insights: CognitiveInsight[]
+  ): { mode: ReasoningMode; reason: string } {
+    const remainingThoughts = Math.max(0, thoughtData.total_thoughts - thoughtData.thought_number);
+    const repeatedReasoning = this.findRepeatedReasoningSignal(context, thoughtData.thought);
+    const thought = thoughtData.thought.toLowerCase();
+    const topHypothesis = this.getTopUnresolvedHypothesis();
+
+    if (thoughtData.is_revision) {
+      return {
+        mode: 'revision',
+        reason: renderParaphrase('modeShift:revision', POOL_MODE_SHIFT_REVISION, { thought_number: thoughtData.thought_number }),
+      };
+    }
+
+    if (thoughtData.branch_from_thought) {
+      return {
+        mode: 'branching',
+        reason: renderParaphrase('modeShift:branching', POOL_MODE_SHIFT_BRANCHING, { thought_number: thoughtData.thought_number, branch_from: thoughtData.branch_from_thought }),
+      };
+    }
+
+    if (
+      !thoughtData.next_thought_needed ||
+      (remainingThoughts <= 1 && (context.confidence_level >= 0.55 || insights.length > 0))
+    ) {
+      return {
+        mode: 'convergence',
+        reason: renderParaphrase('modeShift:nearEnd', POOL_MODE_SHIFT_NEAR_END, { remaining: remainingThoughts, thought_number: thoughtData.thought_number, confPct: Math.round(context.confidence_level * 100) }),
+      };
+    }
+
+    if (this.hasValidationIntent(thought) || context.confidence_level < 0.4) {
+      const topInsight = insights[0]?.description?.replace('Recurring theme: ', '') || 'the current claim';
+      return {
+        mode: 'validation',
+        reason: context.confidence_level < 0.4
+          ? `confidence low (${context.confidence_level.toFixed(2)}) — verify evidence before adding scope`
+          : `testing ${topInsight.length > 50 ? topInsight.slice(0, 47) + '...' : topInsight}`,
+      };
+    }
+
+    if (topHypothesis && repeatedReasoning) {
+      return {
+        mode: 'validation',
+        reason: renderParaphrase('modeShift:looping', POOL_MODE_SHIFT_LOOPING, { short: this.summarizeHypothesis(topHypothesis.statement) }),
+      };
+    }
+
+    return {
+      mode: 'exploration',
+      reason: renderParaphrase('modeShift:exploration', POOL_MODE_SHIFT_EXPLORATION, { thought_number: thoughtData.thought_number, confPct: Math.round(context.confidence_level * 100) }),
+    };
+  }
+
+  private hasValidationIntent(thought: string): boolean {
+    return /\b(test|verify|validate|evidence|measure|prove|confirm|check|reproduce|compare|inspect|benchmark)\b/i.test(
+      thought
+    );
+  }
+
+  private getReasoningModeGuidance(mode: ReasoningMode): string {
+    switch (mode) {
+      case 'validation':
+        return renderParaphrase('guidance:validation', POOL_VALIDATION_GUIDANCE, { confPct: Math.round(this.cognitiveState.confidence_trajectory[this.cognitiveState.confidence_trajectory.length - 1] * 100 || 50), history: this.cognitiveState.thought_count });
+      case 'revision':
+        return renderParaphrase('guidance:revision', POOL_REVISION_GUIDANCE, { confPct: Math.round(this.cognitiveState.confidence_trajectory[this.cognitiveState.confidence_trajectory.length - 1] * 100 || 50), history: this.cognitiveState.thought_count });
+      case 'branching':
+        return renderParaphrase('guidance:branching', POOL_BRANCHING_GUIDANCE, { history: this.cognitiveState.thought_count });
+      case 'convergence':
+        return renderParaphrase('guidance:convergence', POOL_CONVERGENCE_GUIDANCE, { history: this.cognitiveState.thought_count, remaining: this.cognitiveState.confidence_trajectory.length });
+      case 'exploration':
+      default:
+        return renderParaphrase('guidance:exploration', POOL_EXPLORATION_GUIDANCE, { thought_number: this.cognitiveState.thought_count, confPct: Math.round(this.cognitiveState.confidence_trajectory[this.cognitiveState.confidence_trajectory.length - 1] * 100 || 50), history: this.cognitiveState.thought_count });
+    }
+  }
+
+  private getLatestModeShift(): ReasoningModeShift | undefined {
+    const shifts = this.cognitiveState.recent_mode_shifts || [];
+    return shifts[shifts.length - 1];
+  }
+
+  private updateHypothesisLedger(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    insights: CognitiveInsight[]
+  ): void {
+    const existingLedger = this.cognitiveState.hypothesis_ledger || [];
+    const updatedLedger = [...existingLedger];
+    const candidates = this.extractHypothesisCandidates(thoughtData, context, insights);
+
+    for (let index = 0; index < candidates.length; index++) {
+      const candidate = candidates[index];
+      let matchingIndex = this.findMatchingHypothesisIndex(updatedLedger, candidate.statement);
+
+      if (matchingIndex < 0 && thoughtData.is_revision) {
+        matchingIndex = this.findRevisionTargetHypothesisIndex(updatedLedger, candidate.statement);
+      }
+
+      if (matchingIndex >= 0) {
+        updatedLedger[matchingIndex] = this.mergeHypothesisEntry(
+          updatedLedger[matchingIndex],
+          candidate,
+          thoughtData
+        );
+      } else {
+        updatedLedger.push(
+          this.createHypothesisEntry(
+            candidate,
+            thoughtData,
+            `hyp_${thoughtData.thought_number}_${index}`
+          )
+        );
+      }
+    }
+
+    this.cognitiveState.hypothesis_ledger = updatedLedger
+      .map(entry => this.normalizeHypothesisEntry(entry))
+      .sort((a, b) => {
+        const rightStatusPriority = this.getHypothesisStatusPriority(b.status);
+        const leftStatusPriority = this.getHypothesisStatusPriority(a.status);
+        const statusDelta = rightStatusPriority - leftStatusPriority;
+        if (statusDelta !== 0) return statusDelta;
+
+        const thoughtDelta = b.last_updated_thought - a.last_updated_thought;
+        if (thoughtDelta !== 0) return thoughtDelta;
+
+        return b.confidence - a.confidence;
+      })
+      .slice(0, 6);
+  }
+
+  private extractHypothesisCandidates(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    insights: CognitiveInsight[]
+  ): Array<{
+    statement: string;
+    confidence: number;
+    supportingEvidence: string[];
+    contradictingEvidence: string[];
+    nextValidationStep: string;
+  }> {
+    const candidates: Array<{
+      statement: string;
+      confidence: number;
+      supportingEvidence: string[];
+      contradictingEvidence: string[];
+      nextValidationStep: string;
+    }> = [];
+
+    const thoughtSentences = thoughtData.thought
+      .split(/[.!?]\s+/)
+      .map(sentence => sentence.trim())
+      .filter(sentence => sentence.length > 0);
+
+    const hypothesisCue =
+      /\b(root cause|caused by|because|due to|suggests?|indicates?|likely|probably|appears?|seems?|assume|hypothesis|means|implies|points to)\b/i;
+
+    for (const sentence of thoughtSentences) {
+      if (
+        !hypothesisCue.test(sentence) &&
+        !thoughtData.is_revision &&
+        !thoughtData.branch_from_thought
+      ) {
+        continue;
+      }
+
+      candidates.push({
+        statement: sentence,
+        confidence: Math.max(0.2, context.confidence_level - (thoughtData.is_revision ? 0.1 : 0)),
+        supportingEvidence: thoughtData.is_revision ? [] : [sentence],
+        contradictingEvidence: thoughtData.is_revision ? [sentence] : [],
+        nextValidationStep:
+          insights[0]?.suggested_validation ||
+          'Test the weakest assumption in this hypothesis with one concrete piece of evidence.',
+      });
+    }
+
+    for (const insight of insights.slice(0, 3)) {
+      if (insight.confidence < 0.55) {
+        continue;
+      }
+
+      candidates.push({
+        statement: insight.description,
+        confidence: Math.min(1, (insight.confidence + (insight.evidence_strength || 0.5)) / 2),
+        supportingEvidence: insight.evidence.slice(0, 3),
+        contradictingEvidence: [],
+        nextValidationStep:
+          insight.suggested_validation ||
+          'Validate this insight against one concrete counterexample before relying on it.',
+      });
+    }
+
+    return candidates.filter(candidate => candidate.statement.trim().length > 0);
+  }
+
+  private findMatchingHypothesisIndex(
+    ledger: HypothesisLedgerEntry[],
+    candidateStatement: string
+  ): number {
+    const normalizedCandidate = this.normalizeThought(candidateStatement);
+    let strongestIndex = -1;
+    let strongestScore = 0;
+
+    for (let index = 0; index < ledger.length; index++) {
+      const existingStatement = this.normalizeThought(ledger[index].statement);
+      const similarity = this.calculateThoughtSimilarity(normalizedCandidate, existingStatement);
+      const sharedTokenCount = this.countSharedSignificantTokens(
+        normalizedCandidate,
+        existingStatement
+      );
+      const compositeScore = Math.max(similarity, sharedTokenCount >= 3 ? 0.4 : 0);
+
+      if (compositeScore > strongestScore) {
+        strongestScore = compositeScore;
+        strongestIndex = index;
+      }
+    }
+
+    return strongestScore >= 0.35 ? strongestIndex : -1;
+  }
+
+  private findRevisionTargetHypothesisIndex(
+    ledger: HypothesisLedgerEntry[],
+    candidateStatement: string
+  ): number {
+    if (
+      !/\b(revision|earlier|previous|prior|wrong|no longer|still occurs|contradict)\b/i.test(
+        candidateStatement
+      )
+    ) {
+      return -1;
+    }
+
+    return ledger.findIndex(
+      hypothesis => hypothesis.status !== 'validated' && hypothesis.status !== 'rejected'
+    );
+  }
+
+  private countSharedSignificantTokens(current: string, previous: string): number {
+    const currentTokens = this.getSignificantTokens(current);
+    const previousTokens = this.getSignificantTokens(previous);
+
+    return [...currentTokens].filter(token => previousTokens.has(token)).length;
+  }
+
+  private createHypothesisEntry(
+    candidate: {
+      statement: string;
+      confidence: number;
+      supportingEvidence: string[];
+      contradictingEvidence: string[];
+      nextValidationStep: string;
+    },
+    thoughtData: ValidatedThoughtData,
+    id: string
+  ): HypothesisLedgerEntry {
+    const entry: HypothesisLedgerEntry = {
+      id,
+      statement: candidate.statement,
+      status: 'active',
+      confidence: candidate.confidence,
+      supporting_evidence: candidate.supportingEvidence,
+      contradicting_evidence: candidate.contradictingEvidence,
+      next_validation_step: candidate.nextValidationStep,
+      last_updated_thought: thoughtData.thought_number,
+    };
+
+    return this.withHypothesisConfidenceUpdate(
+      undefined,
+      this.normalizeHypothesisEntry(
+        this.applyHypothesisStatus(entry, thoughtData.is_revision || false)
+      ),
+      candidate,
+      thoughtData.is_revision || false
+    );
+  }
+
+  private mergeHypothesisEntry(
+    existing: HypothesisLedgerEntry,
+    candidate: {
+      statement: string;
+      confidence: number;
+      supportingEvidence: string[];
+      contradictingEvidence: string[];
+      nextValidationStep: string;
+    },
+    thoughtData: ValidatedThoughtData
+  ): HypothesisLedgerEntry {
+    const merged: HypothesisLedgerEntry = {
+      ...existing,
+      statement:
+        candidate.statement.length > existing.statement.length
+          ? candidate.statement
+          : existing.statement,
+      confidence: Math.min(1, existing.confidence * 0.6 + candidate.confidence * 0.4),
+      supporting_evidence: this.mergeEvidence(
+        existing.supporting_evidence,
+        candidate.supportingEvidence
+      ),
+      contradicting_evidence: this.mergeEvidence(
+        existing.contradicting_evidence,
+        candidate.contradictingEvidence
+      ),
+      next_validation_step: candidate.nextValidationStep || existing.next_validation_step,
+      last_updated_thought: thoughtData.thought_number,
+    };
+
+    return this.withHypothesisConfidenceUpdate(
+      existing,
+      this.normalizeHypothesisEntry(
+        this.applyHypothesisStatus(merged, thoughtData.is_revision || false)
+      ),
+      candidate,
+      thoughtData.is_revision || false
+    );
+  }
+
+  private withHypothesisConfidenceUpdate(
+    existing: HypothesisLedgerEntry | undefined,
+    entry: HypothesisLedgerEntry,
+    candidate: {
+      statement: string;
+      confidence: number;
+      supportingEvidence: string[];
+      contradictingEvidence: string[];
+      nextValidationStep: string;
+    },
+    isRevision: boolean
+  ): HypothesisLedgerEntry {
+    return {
+      ...entry,
+      last_confidence_update: this.describeHypothesisConfidenceUpdate(
+        existing,
+        entry,
+        candidate,
+        isRevision
+      ),
+    };
+  }
+
+  private describeHypothesisConfidenceUpdate(
+    existing: HypothesisLedgerEntry | undefined,
+    entry: HypothesisLedgerEntry,
+    candidate: {
+      statement: string;
+      confidence: number;
+      supportingEvidence: string[];
+      contradictingEvidence: string[];
+      nextValidationStep: string;
+    },
+    isRevision: boolean
+  ): HypothesisLedgerEntry['last_confidence_update'] {
+    const previousConfidence = Number((existing?.confidence ?? entry.confidence).toFixed(3));
+    const currentConfidence = Number(entry.confidence.toFixed(3));
+    const delta = Number((currentConfidence - previousConfidence).toFixed(3));
+    const direction = delta > 0.01 ? 'increase' : delta < -0.01 ? 'decrease' : ('stable' as const);
+
+    const latestSupport = candidate.supportingEvidence[0];
+    const latestContradiction = candidate.contradictingEvidence[0];
+
+    let reason: string;
+    if (!existing) {
+      reason = latestContradiction
+        ? `Initialized cautiously: first evidence contradicts — "${this.summarizeHypothesis(latestContradiction)}"`
+        : latestSupport
+          ? `Initialized: "${this.summarizeHypothesis(latestSupport)}"`
+          : 'Initialized without enough evidence to move confidence yet.';
+    } else if (direction === 'increase') {
+      const evidenceType = latestSupport && latestSupport.includes('http') ? 'source' : latestSupport && latestSupport.includes('data') ? 'data' : 'observation';
+      reason = entry.status === 'validated'
+        ? `Validated: accumulated ${entry.supporting_evidence.length} supporting pieces (confidence ≥ 0.75)`
+        : latestSupport
+          ? `+${delta} — new ${evidenceType}: "${this.summarizeHypothesis(latestSupport)}"`
+          : `+${delta} — support strengthened without new contradictions`;
+    } else if (direction === 'decrease') {
+      reason = isRevision && latestContradiction
+        ? `-${Math.abs(delta)} — revision introduced contradiction: "${this.summarizeHypothesis(latestContradiction)}"`
+        : entry.status === 'rejected'
+          ? `Rejected: ${entry.contradicting_evidence.length} contradictions, confidence dropped to ${currentConfidence}`
+          : latestContradiction
+            ? `-${Math.abs(delta)} — contradiction: "${this.summarizeHypothesis(latestContradiction)}"`
+            : `-${Math.abs(delta)} — evidence balance weakened`;
+    } else {
+      reason = latestSupport || latestContradiction
+        ? `Stable: new evidence balanced against existing record (${entry.supporting_evidence.length} support, ${entry.contradicting_evidence.length} contradict)`
+        : `Stable: no material change in evidence`;
+    }
+
+    return {
+      previous_confidence: previousConfidence,
+      current_confidence: currentConfidence,
+      delta,
+      direction,
+      reason,
+    };
+  }
+
+  private applyHypothesisStatus(
+    entry: HypothesisLedgerEntry,
+    isRevision: boolean
+  ): HypothesisLedgerEntry {
+    const supportCount = entry.supporting_evidence.length;
+    const contradictionCount = entry.contradicting_evidence.length;
+
+    if (contradictionCount >= 2 && entry.confidence < 0.35) {
+      return { ...entry, status: 'rejected' };
+    }
+
+    if (isRevision && contradictionCount > 0) {
+      return { ...entry, status: 'revised', confidence: Math.max(0.2, entry.confidence - 0.1) };
+    }
+
+    if (contradictionCount > supportCount) {
+      return { ...entry, status: 'weakening', confidence: Math.max(0.2, entry.confidence - 0.05) };
+    }
+
+    if (supportCount >= 2 && entry.confidence >= 0.75) {
+      return { ...entry, status: 'validated', confidence: Math.min(1, entry.confidence + 0.05) };
+    }
+
+    if (supportCount > 0) {
+      return {
+        ...entry,
+        status: 'strengthening',
+        confidence: Math.min(1, entry.confidence + (supportCount >= 2 ? 0.08 : 0.05)),
+      };
+    }
+
+    return { ...entry, status: 'active' };
+  }
+
+  private normalizeHypothesisEntry(entry: HypothesisLedgerEntry): HypothesisLedgerEntry {
+    return {
+      ...entry,
+      statement: entry.statement.replace(/\s+/g, ' ').trim(),
+      supporting_evidence: this.limitEvidence(entry.supporting_evidence),
+      contradicting_evidence: this.limitEvidence(entry.contradicting_evidence),
+      confidence: Math.min(1, Math.max(0, entry.confidence)),
+      last_confidence_update: entry.last_confidence_update
+        ? {
+            ...entry.last_confidence_update,
+            previous_confidence: Math.min(
+              1,
+              Math.max(0, entry.last_confidence_update.previous_confidence)
+            ),
+            current_confidence: Math.min(
+              1,
+              Math.max(0, entry.last_confidence_update.current_confidence)
+            ),
+            delta: Number(entry.last_confidence_update.delta.toFixed(3)),
+          }
+        : undefined,
+    };
+  }
+
+  private mergeEvidence(existing: string[], incoming: string[]): string[] {
+    return this.limitEvidence([...existing, ...incoming]);
+  }
+
+  private limitEvidence(evidence: string[]): string[] {
+    return Array.from(
+      new Set(
+        evidence.map(item => item.replace(/\s+/g, ' ').trim()).filter(item => item.length > 0)
+      )
+    ).slice(0, 3);
+  }
+
+  private getHypothesisStatusPriority(status: HypothesisLedgerEntry['status']): number {
+    switch (status) {
+      case 'active':
+        return 6;
+      case 'revised':
+        return 5;
+      case 'strengthening':
+        return 4;
+      case 'weakening':
+        return 3;
+      case 'validated':
+        return 2;
+      case 'rejected':
+        return 1;
+      default:
+        return 0;
+    }
+  }
+
+  private getTopUnresolvedHypothesis(): HypothesisLedgerEntry | undefined {
+    return (this.cognitiveState.hypothesis_ledger || []).find(
+      hypothesis => hypothesis.status !== 'validated' && hypothesis.status !== 'rejected'
+    );
+  }
+
+  private async getSimilarSessions(
+    sessionContext?: Partial<ReasoningSession>
+  ): Promise<ReasoningSession[]> {
+    if (!this.memoryStore || !sessionContext?.objective) return [];
+
+    try {
+      // This would implement similarity search based on objectives and domains
+      return await this.memoryStore.getSessions(5);
+    } catch (error) {
+      console.error('Error getting similar sessions:', error);
+      return [];
+    }
+  }
+
+  private async extractPatterns(): Promise<{
+    successPatterns: string[];
+    failurePatterns: string[];
+  }> {
+    // This would analyze memory to extract successful and failed patterns
+    return {
+      successPatterns: ['systematic_approach', 'evidence_based', 'iterative_refinement'],
+      failurePatterns: ['overconfidence', 'assumption_heavy', 'insufficient_analysis'],
+    };
+  }
+
+  private inferDomain(
+    thoughtData: ValidatedThoughtData,
+    sessionContext?: Partial<ReasoningSession>
+  ): string | undefined {
+    if (sessionContext?.domain) return sessionContext.domain;
+
+    const thought = thoughtData.thought.toLowerCase();
+    if (thought.includes('code') || thought.includes('programming')) return 'software';
+    if (thought.includes('design') || thought.includes('user')) return 'design';
+    if (thought.includes('business') || thought.includes('strategy')) return 'business';
+    if (thought.includes('data') || thought.includes('analysis')) return 'analytics';
+
+    return undefined;
+  }
+
+  private calculateUrgency(
+    thoughtData: ValidatedThoughtData,
+    sessionContext?: Partial<ReasoningSession>
+  ): 'low' | 'medium' | 'high' {
+    const thought = thoughtData.thought.toLowerCase();
+
+    // Check for explicit urgency indicators in the thought
+    if (
+      thought.includes('urgent') ||
+      thought.includes('critical') ||
+      thought.includes('immediate')
+    ) {
+      return 'high';
+    }
+
+    // Factor in session context for more accurate urgency assessment
+    if (sessionContext) {
+      // High urgency if this is a late thought in a session with many revisions
+      if (sessionContext.revision_count && sessionContext.revision_count > 3) {
+        return 'high';
+      }
+
+      // Medium urgency if session has been running for a while without goal achievement
+      if (sessionContext.start_time && sessionContext.goal_achieved === false) {
+        const sessionDuration = Date.now() - sessionContext.start_time.getTime();
+        const hoursRunning = sessionDuration / (1000 * 60 * 60);
+        if (hoursRunning > 1) {
+          return 'medium';
+        }
+      }
+
+      // Higher urgency for sessions with low confidence
+      if (sessionContext.confidence_level && sessionContext.confidence_level < 0.3) {
+        return 'medium';
+      }
+    }
+
+    // Check for time-sensitive keywords
+    if (thought.includes('soon') || thought.includes('quickly') || thought.includes('asap')) {
+      return 'medium';
+    }
+
+    // Default to low urgency for exploratory thoughts
+    return 'low';
+  }
+
+  private extractTimeConstraints(
+    thoughtData: ValidatedThoughtData,
+    sessionContext?: Partial<ReasoningSession>
+  ): { max_thoughts?: number; deadline?: Date } | undefined {
+    const constraints: { max_thoughts?: number; deadline?: Date } = {};
+
+    // Check session context first
+    if (sessionContext?.total_thoughts) {
+      constraints.max_thoughts = sessionContext.total_thoughts;
+    }
+
+    // Extract from thought content using regex patterns
+    const thought = thoughtData.thought.toLowerCase();
+
+    // Look for thought limits in the content
+    const thoughtLimitMatch = thought.match(/(?:maximum|max|limit.*?)(\d+).*?thoughts?/);
+    if (thoughtLimitMatch) {
+      constraints.max_thoughts = parseInt(thoughtLimitMatch[1], 10);
+    }
+
+    // Look for time-based deadlines
+    const timePatterns = [
+      { pattern: /(?:deadline|due|finish.*?by).*?(\d{1,2}:\d{2})/i, type: 'time' },
+      { pattern: /(?:today|by.*?end.*?day)/i, type: 'today' },
+      { pattern: /(?:tomorrow|next.*?day)/i, type: 'tomorrow' },
+      { pattern: /(?:this.*?week|by.*?week)/i, type: 'week' },
+      { pattern: /urgent|asap|immediately/i, type: 'urgent' },
+    ];
+
+    for (const { pattern, type } of timePatterns) {
+      if (pattern.test(thought)) {
+        const now = new Date();
+        switch (type) {
+          case 'today':
+            constraints.deadline = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+              23,
+              59,
+              59
+            );
+            break;
+          case 'tomorrow':
+            constraints.deadline = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate() + 1,
+              23,
+              59,
+              59
+            );
+            break;
+          case 'week':
+            constraints.deadline = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+            break;
+          case 'urgent':
+            constraints.deadline = new Date(now.getTime() + 30 * 60 * 1000); // 30 minutes for urgent
+            break;
+          case 'time': {
+            // Try to parse specific time if mentioned
+            const timeMatch = thought.match(/(\d{1,2}):(\d{2})/);
+            if (timeMatch) {
+              const hours = parseInt(timeMatch[1], 10);
+              const minutes = parseInt(timeMatch[2], 10);
+              constraints.deadline = new Date(
+                now.getFullYear(),
+                now.getMonth(),
+                now.getDate(),
+                hours,
+                minutes
+              );
+              // If time is in the past, assume next day
+              if (constraints.deadline < now) {
+                constraints.deadline.setDate(constraints.deadline.getDate() + 1);
+              }
+            }
+            break;
+          }
+        }
+        break; // Use first match
+      }
+    }
+
+    // Default thought limit based on complexity if none specified
+    if (!constraints.max_thoughts && thoughtData.total_thoughts) {
+      constraints.max_thoughts = thoughtData.total_thoughts;
+    }
+
+    return Object.keys(constraints).length > 0 ? constraints : undefined;
+  }
+
+  // Learning and adaptation methods
+  private async learnFromFeedback(
+    interventions: PluginIntervention[],
+    outcome: string,
+    impact_score: number,
+    context: CognitiveContext
+  ): Promise<void> {
+    this.learningManager.learnFromFeedback(interventions, outcome, impact_score, context);
+  }
+
+  private checkAdaptationTriggers(outcome: string, impact_score: number): void {
+    // handled by LearningManager in this refactor
+  }
+
+  private shouldAdapt(): boolean {
+    return this.learningManager.shouldAdapt() && this.config.self_optimization_enabled;
+  }
+
+  private async performAdaptation(): Promise<void> {
+    await this.learningManager.performAdaptation();
+  }
+
+  // Utility methods
+  private generateThoughtId(): string {
+    return `thought_${randomUUID()}`;
+  }
+
+  private calculateCognitiveLoad(interventions: PluginIntervention[]): number {
+    return interventions.reduce((total, intervention) => {
+      // Estimate cognitive load based on intervention type and complexity
+      return total + 0.1; // Placeholder
+    }, 0);
+  }
+
+  private generateTags(
+    thoughtData: ValidatedThoughtData,
+    context: CognitiveContext,
+    interventions: PluginIntervention[],
+    insights: CognitiveInsight[]
+  ): string[] {
+    const tags: string[] = [];
+
+    if (context.domain) tags.push(context.domain);
+    if (context.complexity > 7) tags.push('complex');
+    if (context.confidence_level > 0.8) tags.push('high_confidence');
+    if (interventions.length > 0) tags.push('cognitive_intervention');
+    if (insights.length > 0) tags.push('insight_generated');
+    if (thoughtData.is_revision) tags.push('revision');
+    if (thoughtData.branch_from_thought) tags.push('branching');
+
+    return tags;
+  }
+
+  private assessOutcomeQuality(
+    context: CognitiveContext,
+    interventions: PluginIntervention[],
+    insights: CognitiveInsight[]
+  ): 'excellent' | 'good' | 'fair' | 'poor' {
+    let score = 0.5; // Base score
+
+    if (insights.length > 0) score += 0.3;
+    if (interventions.length > 0) score += 0.1;
+    if (context.complexity > 6 && context.confidence_level < 0.9) score += 0.1;
+
+    if (score > 0.8) return 'excellent';
+    if (score > 0.6) return 'good';
+    if (score > 0.4) return 'fair';
+    return 'poor';
+  }
+
+  // Setup methods
+  private setupPluginRelationships(): void {
+    // Set up plugin dependencies and conflicts
+    this.pluginManager.setPluginConflicts('metacognitive', []); // No conflicts
+    this.pluginManager.setPluginConflicts('persona', []); // No conflicts
+
+    // Metacognitive and persona plugins can work together
+    // but we might want to limit concurrent persona activations
+  }
+
+  private setupEventListeners(): void {
+    // Listen to plugin manager events
+    this.pluginManager.on('orchestration_complete', data => {
+      this.emit('plugins_orchestrated', data);
+    });
+
+    this.pluginManager.on('orchestration_error', data => {
+      this.emit('plugin_orchestration_error', data);
+    });
+
+    // Listen to individual plugin events
+    this.metacognitivePlugin.on('metrics_updated', metrics => {
+      this.emit('metacognitive_metrics_updated', metrics);
+    });
+
+    this.personaPlugin.on('metrics_updated', metrics => {
+      this.emit('persona_metrics_updated', metrics);
+    });
+  }
+
+  /**
+   * Enforce array size limits to prevent memory leaks
+   */
+  private enforceMemoryLimits(): void {
+    // Memory management is now handled automatically by circular buffers
+    // Get buffer statistics for monitoring
+    const interventionStats = this.interventionHistory.getStats();
+    const insightStats = this.insightHistory.getStats();
+    const thoughtStats = this.thoughtOutputHistory.getStats();
+
+    // Log memory efficiency if overflow occurred
+    if (
+      interventionStats.overflowCount > 0 ||
+      insightStats.overflowCount > 0 ||
+      thoughtStats.overflowCount > 0
+    ) {
+      console.error(' Memory buffers overflow detected:', {
+        interventionOverflow: interventionStats.overflowCount,
+        insightOverflow: insightStats.overflowCount,
+        thoughtOverflow: thoughtStats.overflowCount,
+      });
+    }
+
+    // Cleanup old sessions
+    if (this.sessionHistory.size > this.MAX_SESSION_HISTORY) {
+      const sortedSessions = Array.from(this.sessionHistory.entries()).sort(
+        (a, b) => a[1].start_time.getTime() - b[1].start_time.getTime()
+      );
+
+      const toRemove = sortedSessions.slice(0, sortedSessions.length - this.MAX_SESSION_HISTORY);
+      toRemove.forEach(([id]) => this.sessionHistory.delete(id));
+    }
+  }
+
+  /**
+   * Cleanup method to prevent memory leaks and dispose resources
+   * Implements Disposable interface
+   */
+  public async dispose(): Promise<void> {
+    // Remove all listeners from this orchestrator
+    this.removeAllListeners();
+
+    // Remove listeners we added to other components
+    if (this.pluginManager) {
+      this.pluginManager.removeAllListeners('orchestration_complete');
+      this.pluginManager.removeAllListeners('orchestration_error');
+    }
+
+    if (this.metacognitivePlugin) {
+      this.metacognitivePlugin.removeAllListeners('metrics_updated');
+    }
+
+    if (this.personaPlugin) {
+      this.personaPlugin.removeAllListeners('metrics_updated');
+    }
+
+    // Destroy all plugins if available
+    if (this.pluginManager && typeof this.pluginManager.destroy === 'function') {
+      await this.pluginManager.destroy();
+    }
+
+    // Dispose state service
+    if (this.stateService) {
+      await this.stateService.dispose();
+    }
+
+    // Dispose dependency container
+    await this.container.dispose();
+  }
+
+  /**
+   * Legacy destroy method for backward compatibility
+   */
+  public async destroy(): Promise<void> {
+    await this.dispose();
+  }
+}

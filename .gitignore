@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Build output
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Editor directories and files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Runtime logs and test results
+logs/
+test-results/
+test/prompt-evaluation/reports/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints
+
+# Claude/AI assistant files
+CLAUDE.md
+.claude/
+# Added by code-review-graph
+.code-review-graph/

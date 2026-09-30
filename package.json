@@ -1,0 +1,93 @@
+{
+  "name": "@geeknik/plan-audit-map",
+  "version": "1.0.0",
+  "description": "Map. Think. Do. - An MCP server for structured reasoning with revisions, branches, prompt templates, persisted state, and heuristic cognitive metadata.",
+  "author": "Brian Carpenter (geeknik) | Original: Matt Westgate",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "plan-audit-map",
+    "cognitive-reasoning",
+    "problem-solving",
+    "structured-thinking",
+    "mcp",
+    "model-context-protocol",
+    "multi-persona-reasoning",
+    "adaptive-learning",
+    "memory-integration",
+    "cognitive-orchestration",
+    "metacognitive-awareness",
+    "bias-detection",
+    "insight-detection",
+    "claude",
+    "anthropic",
+    "ai-reasoning"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geeknik/plan-audit-map.git"
+  },
+  "bin": {
+    "plan-audit-map": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc && chmod +x dist/*.js dist/**/*.js",
+    "clean": "rm -rf dist",
+    "clean:build": "npm run clean && npm run build",
+    "dev": "tsc --watch",
+    "start": "node --max-old-space-size=512 dist/index.js",
+    "debug": "node dist/index.js --debug",
+    "demo": "node examples/agi-demo.js",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix",
+    "format": "prettier --write \"**/*.{ts,js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,js,json,md}\"",
+    "validate": "run-s format lint:fix build",
+    "prepare": "npm run build",
+    "pretest": "tsc",
+    "reset:evaluations": "rm -rf test/prompt-evaluation/reports && mkdir -p test/prompt-evaluation/reports",
+    "test": "node dist/test/unit-test-runner.js && node dist/test/plan-audit-map.e2e.js basic && node dist/tests/plugin-manager.test.js",
+    "test:basic": "node dist/test/plan-audit-map.e2e.js basic",
+    "test:branch": "node dist/test/plan-audit-map.e2e.js branch",
+    "test:revision": "node dist/test/plan-audit-map.e2e.js revision",
+    "test:error": "node dist/test/plan-audit-map.e2e.js error",
+    "test:perf": "node dist/test/plan-audit-map.e2e.js perf",
+    "test:validate": "run-s validate test",
+    "test:verbose": "node dist/test/plan-audit-map.e2e.js --verbose",
+    "test:all": "node dist/test/plan-audit-map.e2e.js all",
+    "test:unit": "node dist/test/unit-test-runner.js",
+    "eval": "node dist/test/prompt-evaluation/evaluator.js",
+    "eval:view": "node dist/test/prompt-evaluation/evaluator.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "better-sqlite3": "^13.0.3",
+    "chalk": "^5.3.0",
+    "mathjs": "^15.2.0",
+    "zod-to-json-schema": "^3.24.5"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@eslint/js": "^9.26.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/events": "^3.0.3",
+    "@types/node": "^22.15.17",
+    "@typescript-eslint/eslint-plugin": "^8.69.0",
+    "@typescript-eslint/parser": "^8.69.0",
+    "dotenv": "^16.5.0",
+    "eslint": "^9.26.0",
+    "eslint-config-prettier": "^10.1.5",
+    "eslint-plugin-prettier": "^5.2.6",
+    "globals": "^16.1.0",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^3.5.3",
+    "typescript": "^5.3.3"
+  }
+}

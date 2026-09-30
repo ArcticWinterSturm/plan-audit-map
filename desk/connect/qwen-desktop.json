@@ -1,0 +1,25 @@
+{
+  "_comment": "QWEN DESKTOP (official Windows/macOS Electron app, and the qwen-studio Linux port). Qwen's MCP integration is NON-standard — see ../RESEARCH-qwen-desktop.md. Key facts: (1) config is managed by the desktop shell, not chat.qwen.ai (Settings -> MCP / Tools in the app UI); (2) the official app rewrites command 'npx' to its bundled 'bun x' and REPLACES PATH with its resources dir, so use ABSOLUTE paths for node/python exactly as the installer resolves them; (3) in qwen-studio the config lives in ~/.config/qwen-studio/settings.json under mcpServers. Set PLAN_AUDIT_MAP_PROVIDER so the wire tap tags events correctly.",
+  "mcpServers": {
+    "plan-audit-map": {
+      "command": "__NODE__",
+      "args": ["__DIST_INDEX__"],
+      "env": {
+        "PLAN_AUDIT_MAP_PROVIDER": "qwen-desktop"
+      }
+    }
+  },
+  "_with_desk_bar_variant": {
+    "_comment": "On Windows you can also get the taskbar bar + conversation recording inside Qwen by pointing Qwen at the launcher instead. Qwen Studio (Tauri) spawns servers via node mcp-bridge.mjs using the official SDK, so a python wrapper works:",
+    "command": "__PYTHON__",
+    "args": [
+      "__DESK_DIR__/planauditmap_launcher.py",
+      "--client",
+      "qwen-desktop",
+      "--",
+      "__NODE__",
+      "__DIST_INDEX__"
+    ],
+    "env": { "PLAN_AUDIT_MAP_PROVIDER": "qwen-desktop" }
+  }
+}

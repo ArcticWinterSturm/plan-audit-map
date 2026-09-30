@@ -1,0 +1,9 @@
+{
+  "_comment": "HTTP/SSE connection. Start the server first with windows/planauditmap_localhost.bat (or: node dist/index.js --sse --host 127.0.0.1 --port 8002), then point any SSE-capable MCP client at the URL. For remote access use planauditmap_remote.bat (public tunnel) or --token for shared-secret auth.",
+  "mcpServers": {
+    "plan-audit-map": {
+      "url": "http://127.0.0.1:8002/sse",
+      "transport": "sse"
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "base_dir": "/home/user",
+  "db_path": "/home/user/desk-bar.sqlite3",
+  "poll_interval_ms": 1500,
+  "show_on_new_launch": true,
+  "bring_to_front_on_new_launch": true,
+  "single_instance": true,
+  "live_timeout_seconds": 75,
+  "window": {
+    "width": 460,
+    "height": 720,
+    "corner": "bottom-right",
+    "margin_x": 24,
+    "margin_y": 24,
+    "frameless": false,
+    "always_on_top": false,
+    "remember_geometry": true,
+    "start_minimized": false,
+    "double_click_action": "minimize"
+  },
+  "autostart": {
+    "enabled": false,
+    "install_scope": "user"
+  },
+  "agents": {
+    "aliases": {
+      "claude": "Claude Code",
+      "claude-code": "Claude Code",
+      "codex": "Codex",
+      "opencode": "OpenCode",
+      "hermes": "Hermes",
+      "chatgpt": "ChatGPT"
+    }
+  }
+}

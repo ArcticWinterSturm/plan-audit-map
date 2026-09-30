@@ -1,0 +1,10 @@
+{
+  "_comment": "Direct stdio connection (no desk bar, no wire tap). Use this on headless machines or if you only want the server. install.sh / install.bat writes the resolved copy as *.local.json.",
+  "mcpServers": {
+    "plan-audit-map": {
+      "command": "__NODE__",
+      "args": ["__DIST_INDEX__"],
+      "env": {}
+    }
+  }
+}

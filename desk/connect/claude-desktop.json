@@ -1,0 +1,17 @@
+{
+  "_comment": "Claude Desktop — merge into claude_desktop_config.json (Windows: %APPDATA%\\Claude\\claude_desktop_config.json). Variant A is the launcher-wrapped one (desk bar + conversation recording). The installers write the resolved copy as claude-desktop.local.json — paste that straight in.",
+  "mcpServers": {
+    "plan-audit-map": {
+      "command": "__PYTHON__",
+      "args": [
+        "__DESK_DIR__/planauditmap_launcher.py",
+        "--client",
+        "claude-desktop",
+        "--",
+        "__NODE__",
+        "__DIST_INDEX__"
+      ],
+      "env": {}
+    }
+  }
+}

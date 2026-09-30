@@ -1,0 +1,13 @@
+{
+  "_comment": "Qwen Code (the CLI, forked from Gemini CLI) — this one IS standard: merge the mcpServers block into ~/.qwen/settings.json (user scope) or .qwen/settings.json (project scope), or run: qwen mcp add plan-audit-map --transport stdio -- node <abs>/dist/index.js. The installer writes the resolved copy as qwen-code-settings.local.json.",
+  "mcpServers": {
+    "plan-audit-map": {
+      "command": "__NODE__",
+      "args": ["__DIST_INDEX__"],
+      "env": {
+        "PLAN_AUDIT_MAP_PROVIDER": "qwen-code"
+      },
+      "timeout": 30000
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "_comment": "RECOMMENDED (Windows): plan-audit-map via the launcher. Spawns the taskbar desk bar, records every MCP request/response pair into raw_mcp_events (the Conversations / Raw Events tab in the SQL viewer), and transparently proxies stdio. install.sh / install.bat writes the resolved copy next to this file as *.local.json with absolute paths filled in.",
+  "mcpServers": {
+    "plan-audit-map": {
+      "command": "__PYTHON__",
+      "args": [
+        "__DESK_DIR__/planauditmap_launcher.py",
+        "--client",
+        "mcp",
+        "--",
+        "__NODE__",
+        "__DIST_INDEX__"
+      ],
+      "env": {}
+    }
+  }
+}
